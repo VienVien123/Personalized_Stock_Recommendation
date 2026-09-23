@@ -12,10 +12,11 @@ Nguyên tắc chống rò rỉ (quan trọng nhất của bước này):
   2. pop(a)     — số khách đã mua mã a trong cửa sổ gần đây
 Tính tại mốc QUÝ (16 mốc) rồi gán tới các mốc tháng bằng as-of join.
 """
-from neo4j import GraphDatabase
+
 import pandas as pd
-from config import (connect, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
-                     COOC_WINDOW, log)
+from neo4j import GraphDatabase
+
+from config import COOC_WINDOW, NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER, connect, log
 
 BATCH = 10_000
 
@@ -23,14 +24,19 @@ BATCH = 10_000
 def load_graph(drv, con):
     log("s3", "tạo ràng buộc & chỉ mục...")
     with drv.session() as s:
-        s.run("CREATE CONSTRAINT cust_id IF NOT EXISTS "
-              "FOR (c:Customer) REQUIRE c.id IS UNIQUE")
-        s.run("CREATE CONSTRAINT stock_code IF NOT EXISTS "
-              "FOR (x:Stock) REQUIRE x.code IS UNIQUE")
-        s.run("CREATE CONSTRAINT sector_code IF NOT EXISTS "
-              "FOR (g:Sector) REQUIRE g.code IS UNIQUE")
-        s.run("CREATE INDEX traded_date IF NOT EXISTS "
-              "FOR ()-[r:TRADED]-() ON (r.d)")
+        s.run(
+            "CREATE CONSTRAINT cust_id IF NOT EXISTS "
+            "FOR (c:Customer) REQUIRE c.id IS UNIQUE"
+        )
+        s.run(
+            "CREATE CONSTRAINT stock_code IF NOT EXISTS "
+            "FOR (x:Stock) REQUIRE x.code IS UNIQUE"
+        )
+        s.run(
+            "CREATE CONSTRAINT sector_code IF NOT EXISTS "
+            "FOR (g:Sector) REQUIRE g.code IS UNIQUE"
+        )
+        s.run("CREATE INDEX traded_date IF NOT EXISTS FOR ()-[r:TRADED]-() ON (r.d)")
 
         n = s.run("MATCH ()-[r:TRADED]->() RETURN count(r) AS n").single()["n"]
         expected = con.execute("SELECT COUNT(*) FROM txn").fetchone()[0]
@@ -40,38 +46,65 @@ def load_graph(drv, con):
         if n > 0:
             # Một lần chạy bị ngắt có thể để lại graph nạp dở. Không được coi
             # "có ít nhất một cạnh" là hoàn tất vì sẽ làm mất dữ liệu các năm sau.
-            log("s3", f"graph đang nạp dở ({n:,}/{expected:,} cạnh) — làm sạch cạnh TRADED.")
+            log(
+                "s3",
+                f"graph đang nạp dở ({n:,}/{expected:,} cạnh) — làm sạch cạnh TRADED.",
+            )
             s.run("MATCH ()-[r:TRADED]->() DELETE r").consume()
 
         log("s3", "nạp node Khách / Mã / Ngành...")
-        cust = con.execute("SELECT customer_id, customer_type, risk_level, "
-                           "investment_horizon FROM prof").fetchall()
-        s.run("UNWIND $rows AS r MERGE (c:Customer {id: r[0]}) "
-              "SET c.type=r[1], c.risk=r[2], c.horizon=r[3]", rows=cust)
+        cust = con.execute(
+            "SELECT customer_id, customer_type, risk_level, "
+            "investment_horizon FROM prof"
+        ).fetchall()
+        s.run(
+            "UNWIND $rows AS r MERGE (c:Customer {id: r[0]}) "
+            "SET c.type=r[1], c.risk=r[2], c.horizon=r[3]",
+            rows=cust,
+        )
 
-        stk = con.execute("SELECT stock_code, exchange, icb_code, icb_name "
-                          "FROM sec").fetchall()
-        s.run("UNWIND $rows AS r MERGE (x:Stock {code: r[0]}) "
-              "SET x.exchange=r[1], x.icb=r[2]", rows=stk)
+        stk = con.execute(
+            "SELECT stock_code, exchange, icb_code, icb_name FROM sec"
+        ).fetchall()
+        s.run(
+            "UNWIND $rows AS r MERGE (x:Stock {code: r[0]}) "
+            "SET x.exchange=r[1], x.icb=r[2]",
+            rows=stk,
+        )
 
         sect = con.execute("SELECT DISTINCT icb_code, icb_name FROM sec").fetchall()
-        s.run("UNWIND $rows AS r MERGE (g:Sector {code: r[0]}) SET g.name=r[1]",
-              rows=sect)
-        s.run("""UNWIND $rows AS r
+        s.run(
+            "UNWIND $rows AS r MERGE (g:Sector {code: r[0]}) SET g.name=r[1]", rows=sect
+        )
+        s.run(
+            """UNWIND $rows AS r
                  MATCH (x:Stock {code:r[0]}), (g:Sector {code:r[1]})
                  MERGE (x)-[:IN_SECTOR]->(g)""",
-              rows=con.execute("SELECT stock_code, icb_code FROM sec").fetchall())
+            rows=con.execute("SELECT stock_code, icb_code FROM sec").fetchall(),
+        )
 
         log("s3", "nạp cạnh TRADED (có mốc thời gian)...")
         rows = con.execute("""SELECT customer_id, stock_code, CAST(d AS VARCHAR),
                                      side, qty, value FROM txn ORDER BY d""").fetchall()
         for i in range(0, len(rows), BATCH):
-            chunk = [{"cid": r[0], "sc": r[1], "d": r[2], "side": r[3],
-                      "qty": r[4], "val": r[5]} for r in rows[i:i + BATCH]]
-            s.run("""UNWIND $rows AS r
+            chunk = [
+                {
+                    "cid": r[0],
+                    "sc": r[1],
+                    "d": r[2],
+                    "side": r[3],
+                    "qty": r[4],
+                    "val": r[5],
+                }
+                for r in rows[i : i + BATCH]
+            ]
+            s.run(
+                """UNWIND $rows AS r
                      MATCH (c:Customer {id:r.cid}), (x:Stock {code:r.sc})
                      CREATE (c)-[:TRADED {d:r.d, side:r.side, qty:r.qty,
-                                          value:r.val}]->(x)""", rows=chunk)
+                                          value:r.val}]->(x)""",
+                rows=chunk,
+            )
             if (i // BATCH) % 10 == 0:
                 log("s3", f"   ... {i + len(chunk):,}/{len(rows):,} cạnh")
         log("s3", f"nạp xong {len(rows):,} cạnh.")
@@ -79,19 +112,26 @@ def load_graph(drv, con):
 
 def extract_features(drv, con):
     """Tính đặc trưng đồ thị tại từng mốc quý — luôn có WHERE r.d < t."""
-    quarters = [r[0] for r in con.execute("""
+    quarters = [
+        r[0]
+        for r in con.execute("""
         SELECT MAX(t) FROM decision_dates
-        GROUP BY DATE_TRUNC('quarter', t) ORDER BY 1""").fetchall()]
-    log("s3", f"tính đặc trưng đồ thị tại {len(quarters)} mốc quý "
-              f"(cửa sổ {COOC_WINDOW} ngày)...")
+        GROUP BY DATE_TRUNC('quarter', t) ORDER BY 1""").fetchall()
+    ]
+    log(
+        "s3",
+        f"tính đặc trưng đồ thị tại {len(quarters)} mốc quý "
+        f"(cửa sổ {COOC_WINDOW} ngày)...",
+    )
 
     cooc_rows, pop_rows = [], []
     with drv.session() as s:
         for q in quarters:
-            t  = str(q)
+            t = str(q)
             t0 = str(q - __import__("datetime").timedelta(days=COOC_WINDOW))
 
-            pop = s.run("""
+            pop = s.run(
+                """
                 MATCH (c:Customer)-[r:TRADED]->(x:Stock)
                 WHERE r.d > $t0 AND r.d < $t
                 RETURN x.code AS code,
@@ -99,11 +139,23 @@ def extract_features(drv, con):
                        sum(CASE WHEN r.side='BUY' THEN r.value ELSE 0 END) AS buy_value,
                        count(DISTINCT CASE WHEN r.side='SELL' THEN c END) AS n_sellers,
                        sum(CASE WHEN r.side='SELL' THEN r.value ELSE 0 END) AS sell_value""",
-                t0=t0, t=t).data()
-            pop_rows += [(t, p["code"], p["n_buyers"], p["buy_value"],
-                          p["n_sellers"], p["sell_value"]) for p in pop]
+                t0=t0,
+                t=t,
+            ).data()
+            pop_rows += [
+                (
+                    t,
+                    p["code"],
+                    p["n_buyers"],
+                    p["buy_value"],
+                    p["n_sellers"],
+                    p["sell_value"],
+                )
+                for p in pop
+            ]
 
-            co = s.run("""
+            co = s.run(
+                """
                 MATCH (c:Customer)-[r1:TRADED]->(a:Stock)
                 WHERE r1.side='BUY' AND r1.d > $t0 AND r1.d < $t
                 MATCH (c)-[r2:TRADED]->(b:Stock)
@@ -111,7 +163,10 @@ def extract_features(drv, con):
                   AND elementId(a) < elementId(b)
                 WITH a.code AS a, b.code AS b, count(DISTINCT c) AS co
                 WHERE co >= 3
-                RETURN a, b, co""", t0=t0, t=t).data()
+                RETURN a, b, co""",
+                t0=t0,
+                t=t,
+            ).data()
             # đồng mua là quan hệ hai chiều -> ghi cả 2 hướng cho dễ join
             for r in co:
                 cooc_rows.append((t, r["a"], r["b"], r["co"]))
@@ -120,9 +175,17 @@ def extract_features(drv, con):
 
     # Đăng ký DataFrame rồi bulk-copy vào DuckDB. executemany từng dòng với hơn
     # 600 nghìn cặp đồng mua từng làm bước này im lặng hàng chục phút.
-    pop_df = pd.DataFrame(pop_rows, columns=[
-        "qt", "stock_code", "n_buyers", "buy_value", "n_sellers", "sell_value"
-    ])
+    pop_df = pd.DataFrame(
+        pop_rows,
+        columns=[
+            "qt",
+            "stock_code",
+            "n_buyers",
+            "buy_value",
+            "n_sellers",
+            "sell_value",
+        ],
+    )
     cooc_df = pd.DataFrame(cooc_rows, columns=["qt", "a", "b", "co"])
     con.register("_graph_pop_df", pop_df)
     con.register("_graph_cooc_df", cooc_df)

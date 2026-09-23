@@ -7,7 +7,8 @@ Xử lý sẵn 3 cái bẫy của bộ dữ liệu:
   2. Đơn vị giá khác nhau    -> quy hết về VND (bảng giá x 1000)
   3. Giá lệnh ngoài biên độ  -> gắn cờ is_outlier, KHÔNG xoá
 """
-from config import connect, DATA_DIR, HORIZON, log
+
+from config import DATA_DIR, HORIZON, connect, log
 
 
 def main():
@@ -162,11 +163,23 @@ def main():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS sd_idx ON sd(stock_code, dn);")
 
-    for t in ["sec", "px", "idx", "txn", "prof", "hold", "research", "sd", "decision_dates"]:
+    for t in [
+        "sec",
+        "px",
+        "idx",
+        "txn",
+        "prof",
+        "hold",
+        "research",
+        "sd",
+        "decision_dates",
+    ]:
         n = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         log("s1", f"  {t:16s} {n:>9,} dòng")
 
-    bad = con.execute("SELECT SUM(CASE WHEN is_outlier THEN 1 ELSE 0 END) FROM txn").fetchone()[0]
+    bad = con.execute(
+        "SELECT SUM(CASE WHEN is_outlier THEN 1 ELSE 0 END) FROM txn"
+    ).fetchone()[0]
     log("s1", f"  lệnh có giá ngoài biên độ (đã gắn cờ): {bad:,}")
     con.close()
     log("s1", "xong.")

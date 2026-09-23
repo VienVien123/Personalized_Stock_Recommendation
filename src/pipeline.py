@@ -1,6 +1,14 @@
 """Chạy toàn bộ pipeline: ETL -> trạng thái -> đồ thị -> đặc trưng -> huấn luyện."""
-import os, sys, time
-import s1_etl, s2_state, s3_graph, s4_features, s5_train
+
+import os
+import sys
+import time
+
+import s1_etl
+import s2_state
+import s3_graph
+import s4_features
+import s5_train
 from config import DATA_DIR, OUT_DIR, log
 
 DONE = os.path.join(OUT_DIR, "_pipeline_done")
@@ -22,7 +30,10 @@ def check_data():
     missing = [f for f in REQUIRED if not os.path.exists(os.path.join(DATA_DIR, f))]
     if not missing:
         return
-    log("pipeline", f"THIẾU {len(missing)}/{len(REQUIRED)} file dữ liệu trong thư mục data/:")
+    log(
+        "pipeline",
+        f"THIẾU {len(missing)}/{len(REQUIRED)} file dữ liệu trong thư mục data/:",
+    )
     for f in missing:
         log("pipeline", f"    - {f}")
     log("pipeline", "Đặt đủ 7 file CSV vào thư mục data/ rồi chạy lại:")
@@ -38,8 +49,11 @@ def run(force: bool = False):
         except OSError:
             done_version = ""
         if done_version == PIPELINE_VERSION:
-            log("pipeline", "đã chạy đúng phiên bản hiện tại — bỏ qua "
-                            "(xoá artifacts/_pipeline_done để chạy lại).")
+            log(
+                "pipeline",
+                "đã chạy đúng phiên bản hiện tại — bỏ qua "
+                "(xoá artifacts/_pipeline_done để chạy lại).",
+            )
             return
         log("pipeline", "artifacts thuộc phiên bản cũ — tự chạy lại pipeline.")
     check_data()
@@ -47,10 +61,10 @@ def run(force: bool = False):
     for step in (s1_etl, s2_state, s3_graph, s4_features, s5_train):
         s = time.time()
         step.main()
-        log("pipeline", f"{step.__name__} xong sau {time.time()-s:.0f}s")
+        log("pipeline", f"{step.__name__} xong sau {time.time() - s:.0f}s")
     with open(DONE, "w", encoding="utf-8") as f:
         f.write(f"{PIPELINE_VERSION}|{time.time()}")
-    log("pipeline", f"HOÀN TẤT sau {(time.time()-t0)/60:.0f} phút")
+    log("pipeline", f"HOÀN TẤT sau {(time.time() - t0) / 60:.0f} phút")
 
 
 if __name__ == "__main__":

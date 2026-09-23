@@ -9,6 +9,7 @@ Danh sách research đã quyết định mã nào có tín hiệu BUY/HOLD/SELL.
 Điểm BUY cuối = MarketScore (chất lượng từ research) + BehaviorScore (model).
 Đánh giá walk-forward theo quý, không chia ngẫu nhiên.
 """
+
 import json
 
 import lightgbm as lgb
@@ -16,23 +17,41 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from config import connect, OUT_DIR, TOPK, MARKET_WEIGHT, log
-
+from config import MARKET_WEIGHT, OUT_DIR, TOPK, connect, log
 
 CATS = [
-    "customer_type", "risk_level", "investment_horizon", "exchange", "icb_code",
-    "last_side", "research_recommendation",
+    "customer_type",
+    "risk_level",
+    "investment_horizon",
+    "exchange",
+    "icb_code",
+    "last_side",
+    "research_recommendation",
 ]
 BASE_IDS = [
-    "t", "customer_id", "stock_code", "y", "excess_fwd", "label_complete", "q",
+    "t",
+    "customer_id",
+    "stock_code",
+    "y",
+    "excess_fwd",
+    "label_complete",
+    "q",
 ]
 
-PARAMS = dict(
-    objective="binary", metric="auc", learning_rate=0.05,
-    num_leaves=63, min_data_in_leaf=200, feature_fraction=0.8,
-    bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
-    verbose=-1, num_threads=0, seed=42,
-)
+PARAMS = {
+    "objective": "binary",
+    "metric": "auc",
+    "learning_rate": 0.05,
+    "num_leaves": 63,
+    "min_data_in_leaf": 200,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "lambda_l2": 1.0,
+    "verbose": -1,
+    "num_threads": 0,
+    "seed": 42,
+}
 ROUNDS = 300
 
 
@@ -88,8 +107,13 @@ def ranking_metrics(df, score, k):
             ndcgs.append(dcg / idcg if idcg else 0.0)
         ndcg = float(np.mean(ndcgs))
 
-    return dict(precision=precision, recall=recall, hitrate=hitrate,
-                ndcg=ndcg, excess=excess)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "hitrate": hitrate,
+        "ndcg": ndcg,
+        "excess": excess,
+    }
 
 
 def _fit(train, feats, rounds=ROUNDS):
@@ -98,12 +122,14 @@ def _fit(train, feats, rounds=ROUNDS):
     params = PARAMS.copy()
     if pos > 0:
         params["scale_pos_weight"] = min(neg / pos, 50.0)
-    return lgb.train(params, lgb.Dataset(train[feats], train["y"]),
-                     num_boost_round=rounds)
+    return lgb.train(
+        params, lgb.Dataset(train[feats], train["y"]), num_boost_round=rounds
+    )
 
 
-def walk_forward(df, feats, name, baseline_col=None, hybrid=False,
-                 research_first=False):
+def walk_forward(
+    df, feats, name, baseline_col=None, hybrid=False, research_first=False
+):
     df["q"] = pd.PeriodIndex(pd.to_datetime(df["t"]), freq="Q")
     quarters = sorted(df["q"].unique())
     rows = []
@@ -119,18 +145,21 @@ def walk_forward(df, feats, name, baseline_col=None, hybrid=False,
         behavior = normalize_within_group(test, raw)
         behavior_m = ranking_metrics(test, behavior, TOPK)
 
-        row = dict(
-            quy=str(quarters[i]), n_test=len(test),
-            auc=round(float(roc_auc_score(test.y, raw)), 4),
-            behavior_precision=behavior_m["precision"],
-            behavior_recall=behavior_m["recall"],
-            behavior_hitrate=behavior_m["hitrate"],
-            behavior_ndcg=behavior_m["ndcg"],
-        )
+        row = {
+            "quy": str(quarters[i]),
+            "n_test": len(test),
+            "auc": round(float(roc_auc_score(test.y, raw)), 4),
+            "behavior_precision": behavior_m["precision"],
+            "behavior_recall": behavior_m["recall"],
+            "behavior_hitrate": behavior_m["hitrate"],
+            "behavior_ndcg": behavior_m["ndcg"],
+        }
 
         final_score = behavior
         if baseline_col and baseline_col in test:
-            baseline = pd.to_numeric(test[baseline_col], errors="coerce").fillna(0).to_numpy()
+            baseline = (
+                pd.to_numeric(test[baseline_col], errors="coerce").fillna(0).to_numpy()
+            )
             base_m = ranking_metrics(test, baseline, TOPK)
             row.update({f"baseline_{k}": v for k, v in base_m.items()})
             if hybrid:
@@ -143,56 +172,74 @@ def walk_forward(df, feats, name, baseline_col=None, hybrid=False,
         final_m = ranking_metrics(test, final_score, TOPK)
         row.update({f"final_{k}": v for k, v in final_m.items()})
         rows.append(row)
-        log("s5", f"[{name}] {quarters[i]} AUC={row['auc']:.3f} | "
-                  f"NDCG@{TOPK}={final_m['ndcg']:.3f} | "
-                  f"Recall@{TOPK}={final_m['recall']:.3f}")
+        log(
+            "s5",
+            f"[{name}] {quarters[i]} AUC={row['auc']:.3f} | "
+            f"NDCG@{TOPK}={final_m['ndcg']:.3f} | "
+            f"Recall@{TOPK}={final_m['recall']:.3f}",
+        )
 
     return pd.DataFrame(rows)
 
 
 def save(model, df, feats, name):
     model.save_model(f"{OUT_DIR}/model_{name}.txt")
-    meta = dict(
-        features=feats,
-        cats=[c for c in CATS if c in feats],
-        categories={c: [str(v) for v in df[c].cat.categories]
-                    for c in CATS if c in feats},
-    )
+    meta = {
+        "features": feats,
+        "cats": [c for c in CATS if c in feats],
+        "categories": {
+            c: [str(v) for v in df[c].cat.categories] for c in CATS if c in feats
+        },
+    }
     with open(f"{OUT_DIR}/meta_{name}.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
-    imp = pd.DataFrame({
-        "feature": feats,
-        "gain": model.feature_importance("gain"),
-    }).sort_values("gain", ascending=False)
+    imp = pd.DataFrame(
+        {
+            "feature": feats,
+            "gain": model.feature_importance("gain"),
+        }
+    ).sort_values("gain", ascending=False)
     imp.to_csv(f"{OUT_DIR}/importance_{name}.csv", index=False)
     return imp
 
 
-def train_one(con, table, name, extra_drop=(), baseline_col=None, hybrid=False,
-              research_first=False):
+def train_one(
+    con,
+    table,
+    name,
+    extra_drop=(),
+    baseline_col=None,
+    hybrid=False,
+    research_first=False,
+):
     log("s5", f"=== MODEL {name.upper()} ===")
     # Giữ các mốc mới nhất trong bảng feature để app vẫn chấm điểm được, nhưng
     # tuyệt đối không dùng chúng làm nhãn 0 khi chưa đi hết HORIZON phiên.
-    df = con.execute(
-        f"SELECT * FROM {table} WHERE label_complete = 1"
-    ).df()
+    df = con.execute(f"SELECT * FROM {table} WHERE label_complete = 1").df()
     df, feats = prep(df, extra_drop)
-    log("s5", f"{len(df):,} dòng | {len(feats)} đặc trưng | "
-              f"nhãn dương {100*df.y.mean():.2f}%")
+    log(
+        "s5",
+        f"{len(df):,} dòng | {len(feats)} đặc trưng | "
+        f"nhãn dương {100 * df.y.mean():.2f}%",
+    )
 
     evaluation = walk_forward(
         df.copy(), feats, name, baseline_col, hybrid, research_first
     )
     if not evaluation.empty:
         evaluation.to_csv(f"{OUT_DIR}/eval_{name}.csv", index=False)
-        log("s5", f"[{name}] TB AUC={evaluation.auc.mean():.4f} | "
-                  f"NDCG@{TOPK}={evaluation.final_ndcg.mean():.4f} | "
-                  f"Recall@{TOPK}={evaluation.final_recall.mean():.4f}")
+        log(
+            "s5",
+            f"[{name}] TB AUC={evaluation.auc.mean():.4f} | "
+            f"NDCG@{TOPK}={evaluation.final_ndcg.mean():.4f} | "
+            f"Recall@{TOPK}={evaluation.final_recall.mean():.4f}",
+        )
 
     final_model = _fit(df, feats, rounds=400)
     importance = save(final_model, df, feats, name)
-    log("s5", f"[{name}] 8 đặc trưng mạnh nhất: "
-              f"{', '.join(importance.head(8).feature)}")
+    log(
+        "s5", f"[{name}] 8 đặc trưng mạnh nhất: {', '.join(importance.head(8).feature)}"
+    )
     return evaluation
 
 
@@ -200,33 +247,53 @@ def main():
     con = connect()
     # MarketScore bị loại khỏi behavior model để hai thành phần độc lập; nó chỉ
     # được ghép lại bằng MARKET_WEIGHT khi xếp hạng.
-    buy_drop = ["market_score", "candidate_rank", "market_score_norm",
-                "candidate_rk", "initial_hybrid_score"]
+    buy_drop = [
+        "market_score",
+        "candidate_rank",
+        "market_score_norm",
+        "candidate_rk",
+        "initial_hybrid_score",
+    ]
     ev_buy = train_one(
-        con, "train_buy", "buy", extra_drop=buy_drop,
-        baseline_col="market_score_norm", hybrid=True,
+        con,
+        "train_buy",
+        "buy",
+        extra_drop=buy_drop,
+        baseline_col="market_score_norm",
+        hybrid=True,
     )
     ev_portfolio = train_one(
-        con, "train_portfolio", "portfolio",
-        extra_drop=["market_score", "candidate_rank", "research_recommendation",
-                    "in_research", "research_sell_signal"],
-        baseline_col="research_sell_signal", hybrid=False, research_first=True,
+        con,
+        "train_portfolio",
+        "portfolio",
+        extra_drop=[
+            "market_score",
+            "candidate_rank",
+            "research_recommendation",
+            "in_research",
+            "research_sell_signal",
+        ],
+        baseline_col="research_sell_signal",
+        hybrid=False,
+        research_first=True,
     )
     con.close()
 
     summary = {"market_weight": MARKET_WEIGHT}
     for name, ev in [("buy", ev_buy), ("portfolio", ev_portfolio)]:
         if ev is not None and not ev.empty:
-            summary[name] = dict(
-                auc=round(float(ev.auc.mean()), 4),
-                ndcg=round(float(ev.final_ndcg.mean()), 4),
-                recall=round(float(ev.final_recall.mean()), 4),
-                precision=round(float(ev.final_precision.mean()), 4),
-                hitrate=round(float(ev.final_hitrate.mean()), 4),
-                n_folds=int(len(ev)),
-            )
+            summary[name] = {
+                "auc": round(float(ev.auc.mean()), 4),
+                "ndcg": round(float(ev.final_ndcg.mean()), 4),
+                "recall": round(float(ev.final_recall.mean()), 4),
+                "precision": round(float(ev.final_precision.mean()), 4),
+                "hitrate": round(float(ev.final_hitrate.mean()), 4),
+                "n_folds": len(ev),
+            }
             if "baseline_ndcg" in ev:
-                summary[name]["baseline_ndcg"] = round(float(ev.baseline_ndcg.mean()), 4)
+                summary[name]["baseline_ndcg"] = round(
+                    float(ev.baseline_ndcg.mean()), 4
+                )
 
     with open(f"{OUT_DIR}/summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)

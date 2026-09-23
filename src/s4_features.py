@@ -15,8 +15,16 @@ không thay thế tín hiệu nghiên cứu.
 
 Mọi đặc trưng hành vi chỉ dùng giao dịch trước t. Future BUY/SELL chỉ là nhãn.
 """
-from config import (connect, HORIZON, N_CANDIDATES, COOC_TOPN,
-                    MARKET_WEIGHT, BEHAVIOR_HALF_LIFE, log)
+
+from config import (
+    BEHAVIOR_HALF_LIFE,
+    COOC_TOPN,
+    HORIZON,
+    MARKET_WEIGHT,
+    N_CANDIDATES,
+    connect,
+    log,
+)
 
 
 def main():
@@ -244,8 +252,11 @@ def main():
                    ROUND(100.0*AVG(y) FILTER (WHERE label_complete = 1), 2)
             FROM {tb}
         """).fetchone()
-        log("s4", f"  {tb:16s} {n:>9,} dòng | {n_labeled:>9,} đủ nhãn | "
-                  f"tỷ lệ hành động tương lai {pos_rate}%")
+        log(
+            "s4",
+            f"  {tb:16s} {n:>9,} dòng | {n_labeled:>9,} đủ nhãn | "
+            f"tỷ lệ hành động tương lai {pos_rate}%",
+        )
 
     con.execute("DROP TABLE IF EXISTS _cooc; DROP TABLE IF EXISTS _cooc_top;")
     con.close()

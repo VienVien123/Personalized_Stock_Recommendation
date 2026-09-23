@@ -4,7 +4,8 @@ Tại mỗi mốc t (48 ngày chốt cuối tháng), tính lại "khách này đ
 CHỈ bằng dữ liệu có trước hoặc bằng t. Đây là thứ thay thế cho 2 cột
 portfolio_value / cash_balance trong customer_profile.csv (vốn là giá trị cuối kỳ -> rò rỉ).
 """
-from config import connect, HORIZON, BEHAVIOR_HALF_LIFE, log
+
+from config import BEHAVIOR_HALF_LIFE, HORIZON, connect, log
 
 
 def main():
@@ -125,8 +126,15 @@ def main():
     GROUP BY 1, 2, 3;
     """)
 
-    for t in ["pos", "port_pit", "cust_pit", "cust_skill", "cust_sector",
-              "cust_style", "cust_stock_pit"]:
+    for t in [
+        "pos",
+        "port_pit",
+        "cust_pit",
+        "cust_skill",
+        "cust_sector",
+        "cust_style",
+        "cust_stock_pit",
+    ]:
         n = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         log("s2", f"  {t:16s} {n:>9,} dòng")
     con.close()
