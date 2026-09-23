@@ -1,0 +1,19 @@
+duckdb==1.1.3
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==17.0.0
+lightgbm==4.5.0
+scikit-learn==1.5.2
+neo4j==5.26.0
+
+# Bộ Gradio 4.44.1 + đúng các phiên bản nó được build cùng.
+# Không ghim thì pip kéo FastAPI/Starlette/huggingface_hub đời mới và app vỡ:
+#   - huggingface_hub 1.x đã bỏ HfFolder  -> ImportError lúc khởi động
+#   - FastAPI/Starlette mới              -> lỗi Jinja2 'unhashable type: dict' lúc render
+gradio==4.44.1
+gradio-client==1.3.0
+huggingface-hub==0.25.2
+fastapi==0.112.2
+starlette==0.37.2
+pydantic==2.9.2
+uvicorn==0.30.6
