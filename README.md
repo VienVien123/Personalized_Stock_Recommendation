@@ -360,6 +360,11 @@ nguyên nhãn giữa hai mốc cuối tháng liên tiếp). Kiểm tra ngoài m�
 | `risk_appetite_vol` | Biến động trung bình của các mã khách chọn mua, thay cho `risk_level` tự khai |
 | `n_buys_recent`, `n_sells_recent`, `n_active_days_recent` | Nhịp giao dịch trong `RECENT_WINDOW` ngày gần nhất |
 | `phs_follow_rate` | Tỷ lệ lệnh mua rơi vào lúc PHS đang mở khuyến nghị cho đúng mã đó |
+| `phs_hit_rate`, `phs_avg_excess`, `phs_recent_hit_rate` | Chat luong cac lan khach tung mua theo PHS, chi tinh lenh da du `HORIZON` truoc `t` |
+| `icb_share_30d`, `icb_share_90d`, `icb_recent_shift_30d`, `icb_recent_shift_90d` | Khau vi nganh gan day so voi toan lich su mua cua khach |
+| `stock_in_last_3_buys`, `stock_in_last_5_buys` | Ma dang xet co nam trong cac lenh BUY gan nhat cua khach khong |
+| `same_sector_last_3_buys`, `same_sector_last_5_buys` | Nganh cua ma dang xet co trung voi chuoi BUY gan nhat cua khach khong |
+| `days_since_last_buy_same_sector` | So ngay tu lan gan nhat khach mua mot ma cung nganh |
 | `port_hhi` | Độ tập trung danh mục (1 = dồn vào một mã) |
 | `pos_hold_days`, `pos_has_sold` | Vị thế đã giữ bao lâu, đã từng bán bớt chưa |
 | `hold_days_vs_typical` | Tuổi vị thế so với thời gian khách thường giữ |

@@ -247,6 +247,28 @@ def main():
     JOIN _txn_phs x ON x.d < dd.t
     GROUP BY 1, 2;
     """)
+    # ---------- 3a. Ch?t l??ng mua theo PHS ----------
+    # `phs_follow_rate` ? tr?n ch? tr? l?i "kh?ch c? hay mua theo PHS kh?ng?". B?ng n?y
+    # tr? l?i th?m "nh?ng l?n mua theo PHS ?? ?? HORIZON tr??c t th? k?t qu? ra sao?".
+    # ?i?u ki?n s.dn + HORIZON <= dd.dn ch?n r? r?: t?i t ch? d?ng c?c l?nh ?? bi?t
+    # k?t qu? 20 phi?n.
+    con.execute(f"""
+    CREATE OR REPLACE TABLE cust_phs_quality AS
+    SELECT dd.t, x.customer_id,
+           COUNT(*) AS phs_scored_buys,
+           AVG(CAST(s.y_stock AS DOUBLE)) AS phs_hit_rate,
+           AVG(s.excess_fwd) AS phs_avg_excess,
+           COUNT(*) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW}) AS phs_recent_scored_buys,
+           AVG(CAST(s.y_stock AS DOUBLE)) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW})
+               AS phs_recent_hit_rate,
+           AVG(s.excess_fwd) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW})
+               AS phs_recent_avg_excess
+    FROM decision_dates dd
+    JOIN _txn_phs x ON x.side = 'BUY' AND x.in_phs AND x.d < dd.t
+    JOIN sd s ON s.stock_code = x.stock_code AND s.d = x.d
+    WHERE s.dn + {HORIZON} <= dd.dn
+    GROUP BY 1, 2;
+    """)
     con.execute("DROP TABLE IF EXISTS _txn_phs;")
 
     # ---------- 3b. Kỳ hạn đầu tư suy ra từ thời gian nắm giữ ----------
@@ -352,6 +374,88 @@ def main():
     GROUP BY 1, 2, 3;
     """)
 
+
+    # Kh?u v? ng?nh ??ng: ng?nh kh?ch mua g?n ??y c? ?ang l?ch kh?i kh?u v?
+    # to?n l?ch s? kh?ng. C?c paper sequence/multi-view th??ng nh?n m?nh t?n hi?u n?y.
+    con.execute(f"""
+    CREATE OR REPLACE TABLE cust_sector_recent AS
+    WITH a AS (
+        SELECT dd.t, x.customer_id, sc.icb_code,
+               COUNT(*) AS n_all,
+               SUM(x.value) AS value_all,
+               SUM(CASE WHEN x.d >= dd.t - 30 THEN 1 ELSE 0 END) AS n_30d,
+               SUM(CASE WHEN x.d >= dd.t - 30 THEN x.value ELSE 0 END) AS value_30d,
+               SUM(CASE WHEN x.d >= dd.t - {RECENT_WINDOW} THEN 1 ELSE 0 END) AS n_90d,
+               SUM(CASE WHEN x.d >= dd.t - {RECENT_WINDOW} THEN x.value ELSE 0 END)
+                   AS value_90d
+        FROM decision_dates dd
+        JOIN txn x  ON x.d < dd.t AND x.side = 'BUY'
+        JOIN sec sc ON sc.stock_code = x.stock_code
+        GROUP BY 1, 2, 3
+    )
+    SELECT *,
+           n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_share_all,
+           n_30d * 1.0 / NULLIF(SUM(n_30d) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_share_30d,
+           n_90d * 1.0 / NULLIF(SUM(n_90d) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_share_90d,
+           value_90d * 1.0 / NULLIF(SUM(value_90d) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_value_share_90d,
+           COALESCE(
+               n_30d * 1.0 / NULLIF(SUM(n_30d) OVER (PARTITION BY t, customer_id), 0), 0
+           ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_recent_shift_30d,
+           COALESCE(
+               n_90d * 1.0 / NULLIF(SUM(n_90d) OVER (PARTITION BY t, customer_id), 0), 0
+           ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_recent_shift_90d
+    FROM a;
+    """)
+
+    # Chu?i mua g?n nh?t: m?/ng?nh ?ang x?t c? n?m trong 1/3/5 l?nh BUY g?n nh?t
+    # c?a kh?ch kh?ng. T?ch stock v? sector ?? S4 gh?p v?i c? r? PHS v? danh m?c.
+    con.execute("""
+    CREATE OR REPLACE TABLE cust_recent_stock_seq AS
+    WITH r AS (
+        SELECT dd.t, x.customer_id, x.stock_code,
+               ROW_NUMBER() OVER (
+                   PARTITION BY dd.t, x.customer_id
+                   ORDER BY x.d DESC, x.ts DESC, x.transaction_id DESC
+               ) AS rn,
+               DATE_DIFF('day', x.d, dd.t) AS days_ago
+        FROM decision_dates dd
+        JOIN txn x ON x.d < dd.t AND x.side = 'BUY'
+    )
+    SELECT t, customer_id, stock_code,
+           MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS stock_in_last_buy,
+           MAX(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS stock_in_last_3_buys,
+           MAX(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS stock_in_last_5_buys,
+           MIN(days_ago) AS days_since_last_buy_stock
+    FROM r
+    GROUP BY 1, 2, 3;
+
+    CREATE OR REPLACE TABLE cust_recent_sector_seq AS
+    WITH r AS (
+        SELECT dd.t, x.customer_id, sc.icb_code,
+               ROW_NUMBER() OVER (
+                   PARTITION BY dd.t, x.customer_id
+                   ORDER BY x.d DESC, x.ts DESC, x.transaction_id DESC
+               ) AS rn,
+               DATE_DIFF('day', x.d, dd.t) AS days_ago
+        FROM decision_dates dd
+        JOIN txn x ON x.d < dd.t AND x.side = 'BUY'
+        JOIN sec sc ON sc.stock_code = x.stock_code
+    )
+    SELECT t, customer_id, icb_code,
+           MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS same_sector_as_last_buy,
+           SUM(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS same_sector_last_3_buys,
+           SUM(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS same_sector_last_5_buys,
+           MIN(days_ago) AS days_since_last_buy_same_sector
+    FROM r
+    GROUP BY 1, 2, 3;
+    """)
+
     # ---------- 6. Phong cách đầu tư lịch sử ----------
     # Học từ trạng thái thị trường NGAY TRƯỚC các lệnh BUY cũ. Trọng số giảm một
     # nửa sau BEHAVIOR_HALF_LIFE ngày, giống ý tưởng style profile trong notebook.
@@ -404,9 +508,13 @@ def main():
         "pos",
         "port_pit",
         "cust_pit",
+        "cust_phs_quality",
         "cust_horizon",
         "cust_skill",
         "cust_sector",
+        "cust_sector_recent",
+        "cust_recent_stock_seq",
+        "cust_recent_sector_seq",
         "cust_style",
         "cust_stock_pit",
     ]:

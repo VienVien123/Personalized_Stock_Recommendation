@@ -237,6 +237,20 @@ def main():
                st.preferred_vol_20 AS risk_appetite_vol,
                cu.n_buys_recent, cu.n_sells_recent, cu.n_active_days_recent,
                cu.phs_follow_rate,
+               pq.phs_scored_buys, pq.phs_hit_rate, pq.phs_avg_excess,
+               pq.phs_recent_scored_buys, pq.phs_recent_hit_rate,
+               pq.phs_recent_avg_excess,
+               csr.icb_share_all, csr.icb_share_30d, csr.icb_share_90d,
+               csr.icb_value_share_90d, csr.icb_recent_shift_30d,
+               csr.icb_recent_shift_90d,
+               COALESCE(rss.stock_in_last_buy, 0) AS stock_in_last_buy,
+               COALESCE(rss.stock_in_last_3_buys, 0) AS stock_in_last_3_buys,
+               COALESCE(rss.stock_in_last_5_buys, 0) AS stock_in_last_5_buys,
+               rss.days_since_last_buy_stock,
+               COALESCE(rsec.same_sector_as_last_buy, 0) AS same_sector_as_last_buy,
+               COALESCE(rsec.same_sector_last_3_buys, 0) AS same_sector_last_3_buys,
+               COALESCE(rsec.same_sector_last_5_buys, 0) AS same_sector_last_5_buys,
+               rsec.days_since_last_buy_same_sector,
                DATE_DIFF('day', pr.open_date, cp.t) AS account_age,
                cu.n_trades, cu.n_stocks, cu.n_buys, cu.n_sells,
                cu.avg_trade_value, cu.days_since_first_trade, cu.days_since_last_trade,
@@ -257,6 +271,14 @@ def main():
         LEFT JOIN cust_skill sk ON sk.t = cp.t AND sk.customer_id = cp.customer_id
         LEFT JOIN cust_style st ON st.t = cp.t AND st.customer_id = cp.customer_id
         LEFT JOIN cust_horizon ch ON ch.t = cp.t AND ch.customer_id = cp.customer_id
+        LEFT JOIN cust_phs_quality pq ON pq.t = cp.t AND pq.customer_id = cp.customer_id
+        LEFT JOIN cust_sector_recent csr ON csr.t = cp.t AND csr.customer_id = cp.customer_id
+                                      AND csr.icb_code = s.icb_code
+        LEFT JOIN cust_recent_stock_seq rss ON rss.t = cp.t AND rss.customer_id = cp.customer_id
+                                           AND rss.stock_code = cp.stock_code
+        LEFT JOIN cust_recent_sector_seq rsec ON rsec.t = cp.t
+                                             AND rsec.customer_id = cp.customer_id
+                                             AND rsec.icb_code = s.icb_code
         LEFT JOIN port_pit pp ON pp.t = cp.t AND pp.customer_id = cp.customer_id
         LEFT JOIN cust_stock_pit csp ON csp.t = cp.t AND csp.customer_id = cp.customer_id
                                     AND csp.stock_code = cp.stock_code
@@ -317,6 +339,20 @@ def main():
            st.preferred_vol_20 AS risk_appetite_vol,
            cu.n_buys_recent, cu.n_sells_recent, cu.n_active_days_recent,
            cu.phs_follow_rate,
+           pq.phs_scored_buys, pq.phs_hit_rate, pq.phs_avg_excess,
+           pq.phs_recent_scored_buys, pq.phs_recent_hit_rate,
+           pq.phs_recent_avg_excess,
+           csr.icb_share_all, csr.icb_share_30d, csr.icb_share_90d,
+           csr.icb_value_share_90d, csr.icb_recent_shift_30d,
+           csr.icb_recent_shift_90d,
+           COALESCE(rss.stock_in_last_buy, 0) AS stock_in_last_buy,
+           COALESCE(rss.stock_in_last_3_buys, 0) AS stock_in_last_3_buys,
+           COALESCE(rss.stock_in_last_5_buys, 0) AS stock_in_last_5_buys,
+           rss.days_since_last_buy_stock,
+           COALESCE(rsec.same_sector_as_last_buy, 0) AS same_sector_as_last_buy,
+           COALESCE(rsec.same_sector_last_3_buys, 0) AS same_sector_last_3_buys,
+           COALESCE(rsec.same_sector_last_5_buys, 0) AS same_sector_last_5_buys,
+           rsec.days_since_last_buy_same_sector,
            DATE_DIFF('day', pr.open_date, p.t) AS account_age,
            cu.n_trades, cu.n_stocks, cu.n_buys, cu.n_sells,
            sk.hist_hit_rate, pp.n_positions, pp.port_hhi,
@@ -331,6 +367,14 @@ def main():
     LEFT JOIN cust_skill sk ON sk.t = p.t AND sk.customer_id = p.customer_id
     LEFT JOIN cust_style st ON st.t = p.t AND st.customer_id = p.customer_id
     LEFT JOIN cust_horizon ch ON ch.t = p.t AND ch.customer_id = p.customer_id
+    LEFT JOIN cust_phs_quality pq ON pq.t = p.t AND pq.customer_id = p.customer_id
+    LEFT JOIN cust_sector_recent csr ON csr.t = p.t AND csr.customer_id = p.customer_id
+                                  AND csr.icb_code = s.icb_code
+    LEFT JOIN cust_recent_stock_seq rss ON rss.t = p.t AND rss.customer_id = p.customer_id
+                                       AND rss.stock_code = p.stock_code
+    LEFT JOIN cust_recent_sector_seq rsec ON rsec.t = p.t
+                                         AND rsec.customer_id = p.customer_id
+                                         AND rsec.icb_code = s.icb_code
     LEFT JOIN cust_stock_pit csp ON csp.t = p.t AND csp.customer_id = p.customer_id
                                 AND csp.stock_code = p.stock_code
     LEFT JOIN _peer_port pe ON pe.t = p.t AND pe.customer_id = p.customer_id
