@@ -360,6 +360,11 @@ nguyên nhãn giữa hai mốc cuối tháng liên tiếp). Kiểm tra ngoài m�
 | `risk_appetite_vol` | Biến động trung bình của các mã khách chọn mua, thay cho `risk_level` tự khai |
 | `n_buys_recent`, `n_sells_recent`, `n_active_days_recent` | Nhịp giao dịch trong `RECENT_WINDOW` ngày gần nhất |
 | `phs_follow_rate` | Tỷ lệ lệnh mua rơi vào lúc PHS đang mở khuyến nghị cho đúng mã đó |
+| `phs_hit_rate`, `phs_avg_excess`, `phs_recent_hit_rate` | Chất lượng các lần khách từng mua theo PHS, chỉ tính lệnh đã đủ `HORIZON` trước `t` |
+| `icb_share_30d`, `icb_share_90d`, `icb_recent_shift_30d`, `icb_recent_shift_90d` | Khẩu vị ngành gần đây so với toàn lịch sử mua của khách |
+| `stock_in_last_3_buys`, `stock_in_last_5_buys` | Mã đang xét có nằm trong các lệnh BUY gần nhất của khách không |
+| `same_sector_last_3_buys`, `same_sector_last_5_buys` | Ngành của mã đang xét có trùng với chuỗi BUY gần nhất của khách không |
+| `days_since_last_buy_same_sector` | Số ngày từ lần gần nhất khách mua một mã cùng ngành |
 | `port_hhi` | Độ tập trung danh mục (1 = dồn vào một mã) |
 | `pos_hold_days`, `pos_has_sold` | Vị thế đã giữ bao lâu, đã từng bán bớt chưa |
 | `hold_days_vs_typical` | Tuổi vị thế so với thời gian khách thường giữ |
@@ -837,4 +842,3 @@ chạy trong vài giây.
   tỷ trọng theo mã/ngành.
 - Kết quả của hệ thống chỉ phục vụ nghiên cứu và hỗ trợ quyết định, không phải cam kết
   lợi nhuận hay tư vấn đầu tư tự động.
-
