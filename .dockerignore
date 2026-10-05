@@ -1,0 +1,6 @@
+artifacts/
+data/
+docs/
+.git/
+__pycache__/
+*.pyc
