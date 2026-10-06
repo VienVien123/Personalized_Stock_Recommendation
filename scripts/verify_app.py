@@ -110,10 +110,9 @@ def doctor(con):
         SELECT COUNT(*) FROM train_buy b
         WHERE NOT EXISTS (
             SELECT 1 FROM phs_calls pc
-            WHERE pc.stock_code = b.stock_code AND pc.open_d <= b.t
-              AND (pc.close_d IS NULL OR pc.close_d > b.t))""",
+            WHERE pc.stock_code = b.stock_code AND pc.open_d = b.t)""",
     )
-    check("mọi ứng viên MUA là mã PHS đang mở tại t", bad == 0, f"{bad:,} dòng sai")
+    check("mọi ứng viên MUA là mã PHS mới BUY đúng ngày t", bad == 0, f"{bad:,} dòng sai")
 
     drv = GraphDatabase.driver(
         NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD), notifications_min_severity="OFF"
@@ -188,17 +187,17 @@ def drive(con):
             [t, N_CUSTOMERS],
         ).fetchall()
     ]
-    # --- dữ liệu gốc để đối chiếu: khuyến nghị PHS còn mở, và vị thế của từng khách
-    open_calls = {
+    # --- dữ liệu gốc để đối chiếu: khuyến nghị PHS mới trong ngày, và vị thế của từng khách
+    buy_calls = {
         r[0]
         for r in con.execute(
             """
             SELECT stock_code FROM phs_calls
-            WHERE open_d <= ? AND (close_d IS NULL OR close_d > ?)""",
-            [t, t],
+            WHERE open_d = ?""",
+            [t],
         ).fetchall()
     }
-    order = {"BÁN": 0, "CÓ THỂ MUA THÊM": 1, "CHƯA CÓ TÍN HIỆU": 2}
+    order = {"BÁN": 0, "CÓ THỂ MUA": 1, "GIỮ": 2, "CHƯA CÓ TÍN HIỆU": 3}
     passed = dict.fromkeys(
         (
             "answered",
@@ -223,7 +222,7 @@ def drive(con):
         shown, scores = list(buy["Mã"]), list(buy["Điểm cuối"])
         ranks = [order.get(a, 99) for a in port["Khuyến nghị"]]
         passed["answered"] += cid in header and str(t) in header
-        passed["buy_open"] += bool(shown) and set(shown) <= open_calls
+        passed["buy_open"] += bool(shown) and set(shown) <= buy_calls
         passed["buy_sorted"] += len(shown) <= TOPK and scores == sorted(
             scores, reverse=True
         )
@@ -242,7 +241,7 @@ def drive(con):
     n = len(customers)
     labels = {
         "answered": "app trả lời đúng khách và mốc được hỏi",
-        "buy_open": "mã MUA hiển thị đều là khuyến nghị PHS còn mở (đọc lại phs_calls)",
+        "buy_open": "mã MUA hiển thị đều là khuyến nghị PHS mới trong ngày (đọc lại phs_calls)",
         "buy_sorted": "nhánh MUA: không quá TOPK mã, xếp theo điểm cuối giảm dần",
         "buy_prob": "khả năng khách mua là xác suất hợp lệ",
         "held": "danh mục hiển thị đúng các mã khách đang nắm (đọc lại pos)",

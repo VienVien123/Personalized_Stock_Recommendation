@@ -30,7 +30,7 @@ STEPS = {
     "s5_train": s5_train,
 }
 # Đổi nhịp quyết định là đổi toàn bộ artifacts, nên nhịp nằm trong mã phiên bản.
-PIPELINE_VERSION = f"phs-v5-{DECISION_FREQ}" + (
+PIPELINE_VERSION = f"phs-v6-{DECISION_FREQ}" + (
     f"-mau{SAMPLE_PCT}" if SAMPLE_PCT < 100 else ""
 )
 

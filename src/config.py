@@ -12,11 +12,11 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "changeme")  # giá trị thật n�
 
 HORIZON = int(os.getenv("HORIZON", "20"))  # số phiên nhìn tới (nhãn)
 TOPK = int(os.getenv("TOPK", "10"))
-# Nhịp ra quyết định: phiên cuối mỗi "week" hoặc mỗi "month". Khuyến nghị PHS sống
-# trung vị ~13 ngày nên nhịp tháng bỏ lỡ một nửa số khuyến nghị.
-DECISION_FREQ = os.getenv("DECISION_FREQ", "week").strip().lower()
-if DECISION_FREQ not in ("week", "month"):
-    raise ValueError("DECISION_FREQ phải là 'week' hoặc 'month'")
+# Nhịp ra quyết định: mặc định là từng phiên giao dịch. Có thể chuyển về phiên cuối
+# mỗi "week" hoặc "month" để so sánh với các phiên bản cũ.
+DECISION_FREQ = os.getenv("DECISION_FREQ", "day").strip().lower()
+if DECISION_FREQ not in ("day", "week", "month"):
+    raise ValueError("DECISION_FREQ phải là 'day', 'week' hoặc 'month'")
 COOC_WINDOW = int(os.getenv("COOC_WINDOW", "180"))  # cửa sổ đồng mua (ngày)
 COOC_TOPN = int(os.getenv("COOC_TOPN", "25"))  # số mã đồng mua mạnh nhất / mã
 
@@ -35,8 +35,6 @@ LONG_HOLD_DAYS = int(os.getenv("LONG_HOLD_DAYS", "90"))  # giữ > 3 tháng
 HOLD_EVIDENCE_THRESHOLD = float(os.getenv("HOLD_EVIDENCE_THRESHOLD", "0.50"))
 # số vòng mua-bán tối thiểu trước khi dám kết luận
 HOLD_MIN_EVIDENCE = int(os.getenv("HOLD_MIN_EVIDENCE", "3"))
-# sau khi PHS chốt lời/cắt lỗ, tín hiệu BÁN còn hiệu lực bao nhiêu ngày
-RESEARCH_SELL_DAYS = int(os.getenv("RESEARCH_SELL_DAYS", "30"))
 # cửa sổ (ngày) đo mức độ giao dịch gần đây của khách
 RECENT_WINDOW = int(os.getenv("RECENT_WINDOW", "90"))
 
@@ -69,7 +67,7 @@ PERSONALIZATION_WEIGHTS = {"graph": 0.50, "suitability": 0.30, "history": 0.20}
 STYLE_SCALES = {"vol_20": 0.03, "ret_20": 0.15, "log_turnover": 5.0}
 # Nhánh danh mục: bậc của tín hiệu nghiên cứu và mức behavior được phép phá hoà.
 # RESEARCH_TIEBREAK < 0.5 để behavior không lật được thứ tự giữa hai bậc.
-RESEARCH_SELL_SIGNAL = {"SELL": 1.0, "BUY": 0.0, "NONE": -0.5}
+RESEARCH_SELL_SIGNAL = {"SELL": 1.5, "BUY": 0.5, "HOLD": 0.0, "NONE": -0.5}
 RESEARCH_TIEBREAK = 0.49
 
 for _name, _w in (

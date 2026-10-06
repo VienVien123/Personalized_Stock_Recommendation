@@ -42,10 +42,11 @@ def minmax(values):
 
 
 def research_action(value):
-    # PHS chỉ có hai trạng thái: đang mở MUA, hoặc vừa chốt lời/cắt lỗ.
+    # BUY chỉ là tín hiệu mới trong ngày; BUY cũ còn mở được hiển thị là HOLD.
     return {
         "SELL": "BÁN",
-        "BUY": "CÓ THỂ MUA THÊM",
+        "BUY": "CÓ THỂ MUA",
+        "HOLD": "GIỮ",
     }.get(value, "CHƯA CÓ TÍN HIỆU")
 
 
@@ -69,7 +70,7 @@ SCORING = {
     "final": "Điểm cuối (đang dùng)",
 }
 AUDIT_ROWS = {  # khoá -> (nhãn, có phải tỷ lệ phần trăm không)
-    "basket_excess": ("Cả rổ PHS đang mở so với VNINDEX", True),
+    "basket_excess": ("Cả rổ PHS BUY mới so với VNINDEX", True),
     "top_minus_basket": ("Mã MarketScore cao nhất so với trung bình rổ", True),
     "rank_ic": ("Tương quan hạng giữa MarketScore và lợi suất", False),
 }
@@ -127,7 +128,7 @@ def weights_table(weights):
 
 
 def audit_table(audit):
-    """MarketScore có dự báo lợi suất không — đo trên rổ PHS đang mở."""
+    """MarketScore có dự báo lợi suất không — đo trên rổ PHS BUY mới."""
     lines = [
         "### MarketScore có dự báo lợi suất không?\n",
         f"Lợi suất vượt VNINDEX sau {audit['horizon']} phiên, mỗi mốc là một quan sát. "
@@ -150,11 +151,13 @@ def audit_table(audit):
 
 
 def performance_markdown(summary):
-    freq = {"week": "tuần", "month": "tháng"}.get(summary.get("decision_freq"), "?")
+    freq = {"day": "ngày", "week": "tuần", "month": "tháng"}.get(
+        summary.get("decision_freq"), "?"
+    )
     sections = [
         "### Hiệu quả walk-forward theo quý (dự đoán ngoài mẫu)",
-        f"Mốc quyết định theo **{freq}**. Nhánh BUY chỉ xét mã PHS đang mở khuyến "
-        f"nghị `BUY`. Điểm cuối = **{MARKET_WEIGHT:.0%} MarketScore + "
+        f"Mốc quyết định theo **{freq}**. Nhánh BUY chỉ xét mã PHS vừa mở khuyến "
+        f"nghị `BUY` trong đúng ngày đó. Điểm cuối = **{MARKET_WEIGHT:.0%} MarketScore + "
         f"{1 - MARKET_WEIGHT:.0%} hành vi**, trong đó MarketScore = dư địa tăng từ "
         "giá hiện tại tới giá mục tiêu.",
         "**HitRate@1** = tỷ lệ nhóm (khách, mốc) mà mã xếp đầu đúng là mã khách "
@@ -184,7 +187,8 @@ HORIZON_LABEL = {
     "UNRATED": "CHƯA ĐÁNH GIÁ ĐƯỢC",
 }
 CALL_LABEL = {
-    "BUY": "PHS đang mở MUA",
+    "BUY": "PHS mới khuyến nghị MUA",
+    "HOLD": "PHS chưa có tín hiệu mới",
     "TAKE_PROFIT": "PHS đã chốt lời",
     "CUT_LOSS": "PHS đã cắt lỗ",
 }
@@ -245,14 +249,14 @@ def build():
         header += f"  \n*Thời điểm: {t}*"
 
         # BUY: hard-filter đã được thực hiện ở train_buy, mọi dòng đều là mã PHS
-        # đang mở khuyến nghị MUA tại t.
+        # mới mở khuyến nghị MUA đúng ngày t.
         buy_rows = con.execute(
             "SELECT * FROM train_buy WHERE customer_id = ? AND t = ?",
             [customer_id, t],
         ).df()
         if buy_rows.empty:
             buy_table = pd.DataFrame(
-                {"Thông báo": ["PHS không có khuyến nghị MUA nào đang mở tại mốc này"]}
+                {"Thông báo": ["PHS không có khuyến nghị MUA mới trong ngày này"]}
             )
         else:
             raw = score(buy_rows, buy_model, buy_meta)
@@ -303,7 +307,7 @@ def build():
             portfolio_rows["action"] = portfolio_rows.research_recommendation.map(
                 research_action
             )
-            priority = {"BÁN": 0, "CÓ THỂ MUA THÊM": 1, "CHƯA CÓ TÍN HIỆU": 2}
+            priority = {"BÁN": 0, "CÓ THỂ MUA": 1, "GIỮ": 2, "CHƯA CÓ TÍN HIỆU": 3}
             portfolio_rows["action_priority"] = portfolio_rows.action.map(priority)
             portfolio_rows = decorate(
                 portfolio_rows.sort_values(
@@ -338,8 +342,8 @@ def build():
     with gr.Blocks(title="Khuyến nghị cổ phiếu cá nhân hóa") as ui:
         gr.Markdown(
             "# Khuyến nghị từ tín hiệu nghiên cứu + hành vi khách hàng\n"
-            "Chỉ xếp hạng mã PHS đang khuyến nghị **MUA**; danh mục dùng tín hiệu "
-            "**MUA / chốt lời / cắt lỗ** của PHS."
+            "Chỉ xếp hạng mã PHS mới khuyến nghị **MUA** trong ngày; danh mục dùng tín hiệu "
+            "**MUA / GIỮ / chốt lời / cắt lỗ** của PHS."
         )
         with gr.Tab("Khuyến nghị"):
             with gr.Row():
@@ -351,7 +355,7 @@ def build():
             heading = gr.Markdown()
             gr.Markdown(f"### TOP-{TOPK} mã BUY phù hợp nhất")
             buy_output = gr.Dataframe(interactive=False, wrap=True)
-            gr.Markdown("### Danh mục hiện tại — tín hiệu BÁN / MUA THÊM")
+            gr.Markdown("### Danh mục hiện tại — tín hiệu BÁN / MUA / GIỮ")
             portfolio_output = gr.Dataframe(interactive=False, wrap=True)
             button.click(
                 recommend,

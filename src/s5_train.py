@@ -453,7 +453,7 @@ def _mean_se(values, overlap):
 
 
 def audit_market_score():
-    """MarketScore có dự báo lợi suất không? Đo trên chính rổ PHS đang mở.
+    """MarketScore có dự báo lợi suất không? Đo trên chính rổ PHS BUY mới trong ngày.
 
     Mỗi mốc là một quan sát (không phải mỗi khách — mọi khách thấy cùng một rổ).
     Dùng mọi mốc để trung bình không phụ thuộc việc chọn mốc nào, nhưng sai số

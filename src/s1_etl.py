@@ -12,7 +12,6 @@ from config import (
     DATA_DIR,
     DECISION_FREQ,
     HORIZON,
-    RESEARCH_SELL_DAYS,
     SAMPLE_PCT,
     SAMPLE_SEED,
     connect,
@@ -113,8 +112,16 @@ def main():
     WHERE {sample("customer_id")};
     """)
 
-    # ---------- Mốc ra quyết định = phiên cuối của mỗi tuần / mỗi tháng ----------
-    con.execute(f"""
+    # ---------- Mốc ra quyết định = từng phiên giao dịch / phiên cuối tuần / cuối tháng ----------
+    if DECISION_FREQ == "day":
+        con.execute("""
+        CREATE OR REPLACE TABLE decision_dates AS
+        SELECT d AS t, dn
+        FROM daycal
+        ORDER BY d;
+        """)
+    else:
+        con.execute(f"""
     CREATE OR REPLACE TABLE decision_dates AS
     SELECT d AS t, dn
     FROM daycal
@@ -155,10 +162,10 @@ def main():
     """)
 
     # ---------- Tín hiệu nghiên cứu tại từng mốc t (point-in-time) ----------
-    #   BUY  : khuyến nghị đã mở trước/đúng t và CHƯA bị đóng tại t.
-    #   SELL : PHS vừa chốt lời/cắt lỗ trong {RESEARCH_SELL_DAYS} ngày trước t.
-    # PHS không chấm điểm sẵn, nên market_score = % dư địa tăng từ giá đóng cửa
-    # tại t tới giá mục tiêu. Chỉ dùng giá tại t -> không rò rỉ tương lai.
+    #   BUY  : PHS mở khuyến nghị mới đúng ngày t.
+    #   SELL : PHS chốt lời/cắt lỗ đúng ngày t.
+    #   HOLD : khuyến nghị BUY cũ còn mở, chưa có tín hiệu mới trong ngày.
+    # Không lặp lại BUY cũ thành khuyến nghị mua mới ở các ngày sau.
     con.execute(f"""
     CREATE OR REPLACE TABLE research AS
     WITH buy AS (
@@ -167,8 +174,7 @@ def main():
                100.0 * (pc.target_price / NULLIF(COALESCE(p.c, pc.entry_price), 0) - 1)
                    AS market_score
         FROM decision_dates dd
-        JOIN phs_calls pc ON pc.open_d <= dd.t
-                         AND (pc.close_d IS NULL OR pc.close_d > dd.t)
+        JOIN phs_calls pc ON pc.open_d = dd.t
         LEFT JOIN px p ON p.stock_code = pc.stock_code AND p.d = dd.t
         QUALIFY ROW_NUMBER() OVER (PARTITION BY dd.t, pc.stock_code
                                    ORDER BY pc.open_d DESC) = 1
@@ -179,10 +185,24 @@ def main():
                pc.entry_price, pc.target_price, pc.cut_loss_price,
                CAST(NULL AS DOUBLE) AS market_score
         FROM decision_dates dd
-        JOIN phs_calls pc ON pc.close_d <= dd.t
-                         AND pc.close_d > dd.t - {RESEARCH_SELL_DAYS}
+        JOIN phs_calls pc ON pc.close_d = dd.t
         QUALIFY ROW_NUMBER() OVER (PARTITION BY dd.t, pc.stock_code
                                    ORDER BY pc.close_d DESC) = 1
+    ),
+    hold AS (
+        SELECT dd.t AS d, pc.stock_code, 'HOLD' AS recommendation,
+               'HOLD' AS call_type, pc.open_d AS call_date,
+               pc.entry_price, pc.target_price, pc.cut_loss_price,
+               CAST(NULL AS DOUBLE) AS market_score
+        FROM decision_dates dd
+        JOIN phs_calls pc ON pc.open_d < dd.t
+                         AND (pc.close_d IS NULL OR pc.close_d > dd.t)
+        WHERE NOT EXISTS (SELECT 1 FROM buy b
+                          WHERE b.d = dd.t AND b.stock_code = pc.stock_code)
+          AND NOT EXISTS (SELECT 1 FROM sell s
+                          WHERE s.d = dd.t AND s.stock_code = pc.stock_code)
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY dd.t, pc.stock_code
+                                   ORDER BY pc.open_d DESC) = 1
     )
     SELECT d, stock_code, market_score, recommendation,
            CAST(RANK() OVER (PARTITION BY d ORDER BY market_score DESC) AS INT)
@@ -194,7 +214,11 @@ def main():
            call_type, call_date, entry_price, target_price, cut_loss_price
     FROM sell
     WHERE NOT EXISTS (SELECT 1 FROM buy b
-                      WHERE b.d = sell.d AND b.stock_code = sell.stock_code);
+                      WHERE b.d = sell.d AND b.stock_code = sell.stock_code)
+    UNION ALL
+    SELECT d, stock_code, market_score, recommendation, CAST(NULL AS INT),
+           call_type, call_date, entry_price, target_price, cut_loss_price
+    FROM hold
     """)
 
     log("s1", "tính đặc trưng giá theo phiên (đà giá, biến động, thanh khoản)...")
@@ -293,7 +317,7 @@ def main():
     """).fetchone()
     log(
         "s1",
-        f"  rổ PHS BUY đang mở: TB {avg_buy:.1f} mã/mốc | "
+        f"  rổ PHS BUY mới trong ngày: TB {avg_buy:.1f} mã/mốc | "
         f"{n_empty}/{n_dates} mốc không có mã nào",
     )
 

@@ -4,23 +4,24 @@ Project kết hợp **tín hiệu nghiên cứu cổ phiếu** với **hành vi 
 khách hàng** để tạo khuyến nghị phù hợp cho từng người tại thời điểm `t`.
 
 Hệ thống không tự thay thế bộ phận research để dự đoán cổ phiếu nào sinh lời. Khuyến
-nghị của PHS quyết định mã nào đang mở `BUY` và mã nào vừa được chốt lời/cắt lỗ (`SELL`);
+nghị của PHS quyết định mã nào vừa có `BUY` mới, mã nào đang `HOLD` do BUY cũ còn mở,
+và mã nào vừa được chốt lời/cắt lỗ (`SELL`);
 model hành vi chỉ xếp mức độ phù hợp của các tín hiệu đó với từng khách hàng.
 
 ## 1. Bài toán cần giải quyết
 
-Tại mỗi mốc quyết định `t` — phiên cuối mỗi tuần (mặc định) hoặc cuối mỗi tháng, đặt bằng
+Tại mỗi mốc quyết định `t` — từng phiên giao dịch (mặc định), phiên cuối mỗi tuần hoặc cuối mỗi tháng, đặt bằng
 `DECISION_FREQ` — hệ thống trả lời hai câu hỏi:
 
-1. Trong các mã research đang đánh giá `BUY`, mã nào phù hợp nhất với khách hàng?
-2. Với các mã khách đang sở hữu, mã nào nên `BÁN` hoặc `CÓ THỂ MUA THÊM`?
+1. Trong các mã research vừa đánh giá `BUY` đúng ngày `t`, mã nào phù hợp nhất với khách hàng?
+2. Với các mã khách đang sở hữu, mã nào nên `BÁN`, `CÓ THỂ MUA`, `GIỮ` hoặc `CHƯA CÓ TÍN HIỆU`?
 
 Hai nhánh được tách riêng:
 
 | Nhánh | Candidate | Kết quả |
 |---|---|---|
-| Mua mới | Chỉ mã PHS đang mở khuyến nghị `BUY` | Top-K mã phù hợp nhất |
-| Danh mục | Chỉ mã khách đang sở hữu | BÁN, CÓ THỂ MUA THÊM hoặc CHƯA CÓ TÍN HIỆU |
+| Mua mới | Chỉ mã PHS mới khuyến nghị `BUY` đúng ngày `t` | Top-K mã phù hợp nhất |
+| Danh mục | Chỉ mã khách đang sở hữu | BÁN, CÓ THỂ MUA, GIỮ hoặc CHƯA CÓ TÍN HIỆU |
 
 Nguyên tắc quan trọng:
 
@@ -106,14 +107,14 @@ S1 ghép lệnh `BUY` thứ k của một mã với lệnh đóng thứ k của 
 
 | Tín hiệu tại `t` | Điều kiện |
 |---|---|
-| `BUY` | Khuyến nghị đã mở trước/đúng `t` và chưa bị đóng tại `t` |
-| `SELL` | PHS vừa chốt lời/cắt lỗ trong `RESEARCH_SELL_DAYS` ngày trước `t` |
+| `BUY` | PHS mở khuyến nghị mua mới đúng ngày `t` |
+| `HOLD` | BUY cũ còn mở, nhưng PHS không có tín hiệu mới cho mã đó trong ngày `t` |
+| `SELL` | PHS chốt lời/cắt lỗ đúng ngày `t` |
 | Không có tín hiệu | Các trường hợp còn lại |
 
-Một khuyến nghị PHS chỉ mở trung vị 13 ngày. Với nhịp tháng, 114/228 khuyến nghị mở rồi
-đóng giữa hai mốc và không bao giờ được dùng; với nhịp tuần còn 33/228 bị bỏ lỡ.
-
-Rổ `BUY` của PHS nhỏ: trung bình 3,5 mã mỗi mốc tuần, 43/207 mốc không có mã nào đang mở.
+BUY cũ không được lặp lại thành khuyến nghị mua mới ở các ngày sau; nếu khách đang nắm mã đó,
+nhánh danh mục sẽ hiển thị `GIỮ` cho tới khi PHS có tín hiệu mới (`BUY`, `TAKE_PROFIT` hoặc
+`CUT_LOSS`). Nếu một ngày không có BUY mới, nhánh mua mới không tự gợi ý mã.
 
 ## 4. MarketScore được dùng như thế nào?
 
@@ -461,17 +462,18 @@ Model dùng mục tiêu `binary` và **không** cân bằng lại lớp, nên đ
 Số vòng boosting không đặt tay: mỗi lần huấn luyện dùng dừng sớm trên quý cuối của tập
 train, và model cuối dùng trung vị số vòng của các quý đã đánh giá.
 
-## 9. Khuyến nghị BÁN / MUA THÊM
+## 9. Khuyến nghị BÁN / MUA / GIỮ
 
 Nhánh danh mục chỉ xét mã khách đang sở hữu tại `t`. Action do research quyết định:
 
 | Tín hiệu PHS tại `t` | Action hiển thị | Điểm tầng |
 |---|---|---:|
-| `SELL` (vừa chốt lời/cắt lỗ) | `BÁN` | 1,0 |
-| `BUY` (khuyến nghị còn mở) | `CÓ THỂ MUA THÊM` | 0,0 |
+| `SELL` (vừa chốt lời/cắt lỗ) | `BÁN` | 1,5 |
+| `BUY` (mua mới đúng ngày) | `CÓ THỂ MUA` | 0,5 |
+| `HOLD` (BUY cũ còn mở, chưa có tín hiệu mới) | `GIỮ` | 0,0 |
 | Không có tín hiệu | `CHƯA CÓ TÍN HIỆU` | -0,5 |
 
-Nhật ký PHS không có tín hiệu `HOLD`.
+Nhật ký PHS không có dòng `HOLD`; hệ thống tự suy ra `HOLD` từ BUY cũ còn hiệu lực.
 
 Model portfolio học:
 
@@ -596,7 +598,7 @@ quan sát; sai số chuẩn đã được nới theo số cửa sổ 20 phiên k
 
 | Phép đo | Số mốc | Trung bình | Sai số chuẩn | t |
 |---|---:|---:|---:|---:|
-| Cả rổ PHS đang mở so với VNINDEX | 164 | +2,46% | 0,98% | 2,52 |
+| Cả rổ PHS BUY mới so với VNINDEX | 164 | +2,46% | 0,98% | 2,52 |
 | Mã MarketScore cao nhất so với trung bình rổ | 145 | +1,11% | 1,34% | 0,83 |
 | Tương quan hạng giữa MarketScore và lợi suất | 123 | +0,080 | 0,098 | 0,81 |
 
@@ -690,7 +692,7 @@ Cả hai đều dừng app, chạy S1 → S5, bật lại app rồi kiểm tra k
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---:|---|
-| `DECISION_FREQ` | week | Nhịp ra quyết định: `week` hoặc `month` |
+| `DECISION_FREQ` | day | Nhịp ra quyết định: `day`, `week` hoặc `month` |
 | `HORIZON` | 20 | Số phiên tương lai dùng để tạo nhãn hành vi |
 | `TOPK` | 10 | Số mã mua mới trả về |
 | `COOC_WINDOW` | 180 | Cửa sổ ngày tính quan hệ graph |
@@ -704,7 +706,6 @@ Cả hai đều dừng app, chạy S1 → S5, bật lại app rồi kiểm tra k
 | `LONG_HOLD_DAYS` | 90 | Giữ lâu hơn số ngày này là bằng chứng dài hạn |
 | `HOLD_EVIDENCE_THRESHOLD` | 0,50 | Tỷ lệ bằng chứng tối thiểu để xếp `SHORT`/`LONG` (tầng 1) |
 | `HOLD_MIN_EVIDENCE` | 3 | Số vòng nắm giữ tối thiểu trước khi kết luận |
-| `RESEARCH_SELL_DAYS` | 30 | Số ngày tín hiệu `SELL` còn hiệu lực sau khi PHS đóng khuyến nghị |
 | `RECENT_WINDOW` | 90 | Cửa sổ ngày đo nhịp giao dịch gần đây |
 | `AIRFLOW_ADMIN_USER` | admin | Tài khoản đăng nhập giao diện Airflow |
 | `AIRFLOW_ADMIN_PASSWORD` | — | Mật khẩu Airflow, bắt buộc |
@@ -817,7 +818,7 @@ chạy trong vài giây.
 |---|---|
 | `tests/test_validate.py` | Thiếu file, thiếu cột, số/ngày sai định dạng, `side` lạ, thiếu VNINDEX đều bị báo |
 | `tests/test_positions.py` | Giá vốn bình quân, phí mua, bán hết thì đặt lại; vị thế dựng lại khớp snapshot cuối tháng |
-| `tests/test_no_leak.py` | Cắt dữ liệu sau ngày `T` thì đặc trưng tại `t ≤ T` giữ nguyên; nhãn chỉ đến từ tương lai; ứng viên MUA luôn là mã PHS đang mở |
+| `tests/test_no_leak.py` | Cắt dữ liệu sau ngày `T` thì đặc trưng tại `t ≤ T` giữ nguyên; nhãn chỉ đến từ tương lai; ứng viên MUA luôn là mã PHS mới BUY đúng ngày |
 | `tests/test_metrics.py` | Thước đo xếp hạng, nhóm tầm thường không thổi phồng kết quả, khoảng đệm train/test |
 | `tests/test_metric_guard.py` | Chốt chặn chỉ số: giảm nhỏ thì qua, tụt mạnh hoặc không hơn ngẫu nhiên thì đỏ |
 | `tests/test_train_smoke.py` | Huấn luyện đầu-cuối, MarketScore không lọt vào model hành vi, app chấm điểm được |

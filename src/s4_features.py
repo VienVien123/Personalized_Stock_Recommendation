@@ -3,14 +3,13 @@ Bước 4 — Ghép tín hiệu nghiên cứu với hành vi khách hàng.
 
 Nhánh MUA
 ---------
-Candidate là các mã PHS đang mở khuyến nghị BUY tại đúng thời điểm t. Model không
-tự phát minh một rổ cổ phiếu khác. Neo4j, lịch sử BUY/SELL, style, kỳ hạn đầu tư
-và thói quen giao dịch của khách chỉ dùng để xếp lại các mã BUY cho từng người.
+Candidate là các mã PHS vừa mở khuyến nghị BUY đúng ngày t. Model không tự phát
+minh một rổ cổ phiếu khác, và BUY cũ không được lặp lại thành mua mới ở ngày sau.
 
 Nhánh DANH MỤC
 --------------
-Candidate là đúng các mã khách đang sở hữu. Tín hiệu của PHS (đang mở BUY, hoặc
-vừa chốt lời/cắt lỗ -> SELL) quyết định hành động nghiệp vụ; model học xác suất
+Candidate là đúng các mã khách đang sở hữu. Tín hiệu của PHS (BUY mới, HOLD khi
+BUY cũ còn mở, hoặc chốt lời/cắt lỗ -> SELL) quyết định hành động nghiệp vụ; model học xác suất
 khách bán để xếp mức ưu tiên, không thay thế tín hiệu nghiên cứu.
 
 Khách tương tự (Neo4j)
@@ -117,7 +116,7 @@ def main():
     JOIN txn x ON x.d < dd.t AND x.d >= dd.t - {RECENT_WINDOW}
     GROUP BY 1, 2, 3;
 
-    -- bước thứ 3 của đường đi, chỉ tính cho các mã PHS đang mở BUY tại t
+    -- bước thứ 3 của đường đi, chỉ tính cho các mã PHS vừa BUY mới tại t
     CREATE OR REPLACE TABLE _peer_buy AS
     SELECT p.t, p.customer_id, r.stock_code,
            SUM(p.sim * r.bought) AS peer_buy_score, SUM(r.bought) AS n_peer_buyers,
@@ -306,9 +305,10 @@ def main():
            s.log_turnover, s.market_score, s.candidate_rank,
            s.research_recommendation, s.research_call_type,
            s.in_research, s.label_complete,
-           -- PHS không có tín hiệu HOLD: SELL = vừa chốt lời/cắt lỗ, BUY = còn mở
+           -- SELL = vừa chốt lời/cắt lỗ, BUY = mới mở, HOLD = BUY cũ còn mở
            CASE s.research_recommendation WHEN 'SELL' THEN {rs["SELL"]}
-                WHEN 'BUY' THEN {rs["BUY"]} ELSE {rs["NONE"]} END
+                WHEN 'BUY' THEN {rs["BUY"]} WHEN 'HOLD' THEN {rs["HOLD"]}
+                ELSE {rs["NONE"]} END
                 AS research_sell_signal,
            s.exchange, s.icb_code,
            p.unreal_pnl_pct,
