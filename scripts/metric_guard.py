@@ -40,13 +40,27 @@ def compare(current, previous, max_drop=MAX_DROP):
     problems = []
     for name in TRACKED:
         now = current[name]
+        before_row = (previous or {}).get(name, {})
+        if now["n_groups"] == 0:
+            # Rổ mỗi mốc chỉ có 1 mã (nhịp ngày) -> không nhóm nào xếp hạng được,
+            # HitRate@1 không xác định. Chốt chặn chuyển sang AUC.
+            auc, before = now["auc"], before_row.get("auc")
+            if auc is None or auc <= 0.5:
+                problems.append(f"{name}: AUC {auc} không hơn đoán ngẫu nhiên")
+            elif before_row.get("n_groups") == 0 and before is not None:
+                if auc < before - max_drop:
+                    problems.append(
+                        f"{name}: AUC giảm từ {before} xuống {auc} "
+                        f"(quá ngưỡng {max_drop})"
+                    )
+            continue
         hit, rnd = now["behavior_hit@1"], now["random_hit@1"]
         if hit is None or rnd is None:
             problems.append(f"{name}: thiếu kết quả đánh giá")
             continue
         if hit <= rnd:
             problems.append(f"{name}: HitRate@1 {hit} không hơn chọn ngẫu nhiên {rnd}")
-        before = (previous or {}).get(name, {}).get("behavior_hit@1")
+        before = before_row.get("behavior_hit@1")
         if before is not None and hit < before - max_drop:
             problems.append(
                 f"{name}: HitRate@1 giảm từ {before} xuống {hit} "

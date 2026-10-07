@@ -39,6 +39,9 @@ from config import (
 
 # model phải hơn chọn ngẫu nhiên ít nhất chừng này về HitRate@1
 MIN_LIFT_OVER_RANDOM = 0.02
+# Khi không nhóm nào xếp hạng được (rổ mỗi mốc chỉ có 1 mã) thì HitRate@1 không xác
+# định; lúc đó model phải đạt AUC tối thiểu này.
+MIN_AUC_WITHOUT_GROUPS = 0.55
 # số khách được gọi gợi ý rồi đối chiếu với dữ liệu gốc
 N_CUSTOMERS = int(os.getenv("VERIFY_CUSTOMERS", "20"))
 REQUIRED_TABLES = [
@@ -150,6 +153,17 @@ def doctor(con):
             "final_hit@1": (r.get("final") or {}).get("hit@1"),
             "n_groups": r.get("n_groups"),
         }
+        if r.get("n_groups") == 0:
+            # Nhịp ngày: rổ MUA là mã PHS mới BUY đúng ngày t, mỗi mốc chỉ 1 mã, nên
+            # không có gì để xếp hạng trong rổ. Model chỉ còn trả lời "khách nào sẽ
+            # mua mã này" -> đo bằng AUC.
+            auc = r.get("auc")
+            check(
+                f"model {name} phân biệt được khách (AUC; không có nhóm xếp hạng được)",
+                auc is not None and auc >= MIN_AUC_WITHOUT_GROUPS,
+                f"AUC {auc} / cần {MIN_AUC_WITHOUT_GROUPS}",
+            )
+            continue
         ok = (
             behavior is not None
             and random_hit is not None
@@ -172,11 +186,12 @@ def drive(con):
     print("Drive + Evidence")
     ui = app.build()
 
+    # Ưu tiên mốc có rổ từ 2 mã; ở nhịp ngày mọi rổ chỉ có 1 mã thì lấy mốc mới nhất.
     t = one(
         con,
         """
         SELECT t FROM train_buy GROUP BY t
-        HAVING COUNT(DISTINCT stock_code) >= 2 ORDER BY t DESC LIMIT 1""",
+        ORDER BY COUNT(DISTINCT stock_code) >= 2 DESC, t DESC LIMIT 1""",
     )
     # Mẫu khách cố định (chọn theo băm mã khách) trong số khách đang có vị thế tại t.
     customers = [

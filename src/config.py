@@ -1,6 +1,7 @@
 """Cấu hình dùng chung — đọc từ biến môi trường (.env)."""
 
 import os
+import re
 
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 OUT_DIR = os.getenv("OUT_DIR", "/app/artifacts")
@@ -84,6 +85,17 @@ EVAL_KS = (1, 3)
 # Lưới MARKET_WEIGHT được đo lại sau mỗi lần chạy (eval_buy_weights.csv).
 MARKET_WEIGHT_GRID = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
+# Model danh mục chỉ học / đánh giá trên mỗi mốc thứ PORTFOLIO_TRAIN_STRIDE (tính theo
+# số thứ tự phiên). Ở nhịp ngày bảng train_portfolio có ~8,7 triệu dòng: nạp hết vào
+# pandas + LightGBM vượt trần 5 GB của container (exit 137), trong khi các mốc liền
+# nhau gần như lặp lại nhau (cửa sổ nhãn 20 phiên chồng lên nhau). Mặc định 5 ở nhịp
+# ngày (tương đương nhịp tuần), 1 ở các nhịp khác. App vẫn chấm điểm ở mọi mốc.
+PORTFOLIO_TRAIN_STRIDE = int(
+    os.getenv("PORTFOLIO_TRAIN_STRIDE") or (5 if DECISION_FREQ == "day" else 1)
+)
+if PORTFOLIO_TRAIN_STRIDE < 1:
+    raise ValueError("PORTFOLIO_TRAIN_STRIDE phải >= 1")
+
 # ---------- Chế độ chạy nhanh & thử nghiệm ----------
 # % khách hàng giữ lại (chọn cố định theo mã khách). 100 = toàn bộ. Nhỏ hơn 100 là
 # chế độ chạy nhanh: phải đặt kèm OUT_DIR / DUCKDB_PATH riêng để không ghi đè kết quả
@@ -108,6 +120,11 @@ DUCKDB_MEMORY = os.getenv("DUCKDB_MEMORY", "3GB")
 # DuckDB dùng thêm bộ nhớ ngoài memory_limit theo từng luồng. Với 12 luồng, bước S4
 # từng chạm 4,7 GB trên trần 5 GB của container và bị kill ngẫu nhiên (exit 137).
 DUCKDB_THREADS = int(os.getenv("DUCKDB_THREADS", "4"))
+# Số mốc quyết định xử lý mỗi lô khi S2/S4 ghép "mọi mốc x lịch sử trước mốc". Ở nhịp
+# ngày có khoảng 1.000 mốc; ghép một lần thì container hết RAM (exit 137).
+DATE_CHUNK = int(os.getenv("DATE_CHUNK", "25"))
+if DATE_CHUNK < 1:
+    raise ValueError("DATE_CHUNK phải >= 1")
 # Chỗ DuckDB tràn dữ liệu ra đĩa. Để trong container, không để trong artifacts/:
 # thư mục đó gắn từ máy chủ (trên Windows đi qua lớp chia sẻ file) nên ghi chậm và
 # từng làm s2 hỏng với "Cannot allocate memory".
@@ -128,6 +145,51 @@ def connect(read_only: bool = False):
     con.execute(f"SET temp_directory='{TMP_DIR}'")
     con.execute("SET preserve_insertion_order=false")
     return con
+
+
+_CREATE = re.compile(r"\s*CREATE OR REPLACE TABLE (\w+) AS", re.IGNORECASE)
+
+
+def create_by_date_chunks(
+    con, sql: str, chunk: int = DATE_CHUNK, slice_tables: tuple = ()
+) -> None:
+    """Dựng một bảng "mọi mốc x lịch sử trước mốc" theo từng lô DATE_CHUNK mốc.
+
+    Các bảng này ghép decision_dates với toàn bộ giao dịch có ngày < t. Ở nhịp
+    ngày (khoảng 1.000 mốc) một lệnh duy nhất tạo ra hàng trăm triệu dòng trung
+    gian và container bị kill vì hết RAM (mã 137). Mọi phép gộp / cửa sổ trong
+    các lệnh đó đều theo từng t, nên chia mốc thành lô cho kết quả y hệt.
+
+    `sql` phải có dạng `CREATE OR REPLACE TABLE x AS SELECT ... decision_dates dd ...`.
+    `slice_tables`: các bảng có cột t được ghép trong `sql`. Mỗi lô chỉ đọc phần
+    của bảng đó thuộc các mốc trong lô; không thì DuckDB dựng bảng băm trên cả
+    bảng (hàng chục triệu dòng ở nhịp ngày) và vượt trần bộ nhớ.
+    """
+    m = _CREATE.match(sql)
+    if not m or "decision_dates dd" not in sql:
+        raise ValueError("create_by_date_chunks cần CREATE OR REPLACE TABLE ... dd")
+    table = m.group(1)
+    select = sql[m.end() :].replace("decision_dates dd", "_dd dd")
+    for name in slice_tables:
+        select, n_sub = re.subn(rf"\bJOIN\s+{name}\b", f"JOIN _dd_{name}", select)
+        if not n_sub:
+            raise ValueError(f"không thấy 'JOIN {name}' trong lệnh dựng {table}")
+    n = con.execute("SELECT COUNT(*) FROM decision_dates").fetchone()[0]
+    for i, lo in enumerate(range(0, max(n, 1), chunk)):
+        con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _dd AS
+        SELECT * FROM decision_dates ORDER BY t LIMIT {chunk} OFFSET {lo}""")
+        for name in slice_tables:
+            con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW _dd_{name} AS
+            SELECT * FROM {name} WHERE t IN (SELECT t FROM _dd)""")
+        head = (
+            f"CREATE OR REPLACE TABLE {table} AS" if i == 0 else f"INSERT INTO {table}"
+        )
+        con.execute(f"{head} {select}")
+    for name in slice_tables:
+        con.execute(f"DROP VIEW IF EXISTS _dd_{name}")
+    con.execute("DROP TABLE IF EXISTS _dd")
 
 
 def log(step: str, msg: str) -> None:

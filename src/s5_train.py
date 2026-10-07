@@ -35,6 +35,7 @@ from config import (
     MARKET_WEIGHT,
     MARKET_WEIGHT_GRID,
     OUT_DIR,
+    PORTFOLIO_TRAIN_STRIDE,
     RESEARCH_TIEBREAK,
     SAMPLE_PCT,
     connect,
@@ -324,8 +325,11 @@ def save(model, df, feats, name, rounds):
     return imp
 
 
-def load_table(table):
+def load_table(table, stride=1):
     """Đọc bảng train rồi đóng DuckDB ngay để nhường RAM cho LightGBM.
+
+    `stride` > 1: chỉ lấy các mốc có số thứ tự phiên chia hết cho `stride` (xem
+    PORTFOLIO_TRAIN_STRIDE trong config).
 
     Việc nặng làm trong DuckDB (có tràn ra đĩa) chứ không làm trong pandas:
       * sắp xếp cố định theo (t, khách, mã) — thứ tự dòng sau phép join bị lệch
@@ -352,7 +356,7 @@ def load_table(table):
             SELECT {", ".join(select)},
                    CAST(DENSE_RANK() OVER (ORDER BY t, customer_id) - 1 AS INTEGER) AS g,
                    CAST(DENSE_RANK() OVER (ORDER BY customer_id) - 1 AS INTEGER) AS c
-            FROM {table} WHERE label_complete = 1
+            FROM {table} WHERE label_complete = 1 AND dn % {int(stride)} = 0
             ORDER BY t, customer_id, stock_code""").arrow()
     finally:
         con.close()
@@ -372,9 +376,11 @@ def _round_floats(d, digits=4):
     }
 
 
-def train_one(table, name, kind, extra_drop, baseline_col):
+def train_one(table, name, kind, extra_drop, baseline_col, stride=1):
     log("s5", f"=== MODEL {name.upper()} ===")
-    df = load_table(table)
+    if stride > 1:
+        log("s5", f"[{name}] chỉ dùng mỗi mốc thứ {stride} để học và đánh giá")
+    df = load_table(table, stride) if stride > 1 else load_table(table)
     ablated = sorted(
         c for c in df.columns if any(fnmatch.fnmatch(c, p) for p in ABLATE_FEATURES)
     )
@@ -532,6 +538,7 @@ def main():
         "sample_pct": SAMPLE_PCT,
         "graph_backend": GRAPH_BACKEND,
         "ablate_features": ABLATE_FEATURES,
+        "portfolio_train_stride": PORTFOLIO_TRAIN_STRIDE,
     }
     summary["buy"] = train_one(
         "train_buy",
@@ -559,6 +566,7 @@ def main():
             "research_sell_signal",
         ],
         baseline_col="research_sell_signal",
+        stride=PORTFOLIO_TRAIN_STRIDE,
     )
 
     summary["market_score_audit"] = audit_market_score()

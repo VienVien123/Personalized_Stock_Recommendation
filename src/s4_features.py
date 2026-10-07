@@ -32,7 +32,23 @@ from config import (
     RESEARCH_SELL_SIGNAL,
     STYLE_SCALES,
     connect,
+    create_by_date_chunks,
     log,
+)
+
+# Các bảng theo mốc t mà cả hai bảng train đều ghép vào (xem create_by_date_chunks).
+PIT_JOINS = (
+    "stock_at_t",
+    "port_pit",
+    "cust_pit",
+    "cust_skill",
+    "cust_style",
+    "cust_horizon",
+    "cust_phs_quality",
+    "cust_sector_recent",
+    "cust_recent_stock_seq",
+    "cust_recent_sector_seq",
+    "cust_stock_pit",
 )
 
 
@@ -199,9 +215,13 @@ def main():
     log("s4", f"độ phủ candidate BUY trên lệnh mua tương lai: {buy_cov}%")
 
     # ---------- Bảng huấn luyện MUA ----------
+    # Hai bảng train ghép với các bảng hàng chục triệu dòng của S2; dựng theo từng lô
+    # mốc (như S2) để phép ghép không vượt trần bộ nhớ ở nhịp ngày.
     log("s4", "dựng train_buy: MarketScore + graph + style + BUY/SELL history...")
     hw, pw, sc = HISTORY_PREF_WEIGHTS, PERSONALIZATION_WEIGHTS, STYLE_SCALES
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE train_buy AS
     WITH b AS (
         SELECT cp.*, s.ret_5, s.ret_20, s.ret_60, s.vol_20, s.up_ratio_20,
@@ -264,6 +284,7 @@ def main():
                CASE WHEN fb.stock_code IS NULL THEN 0 ELSE 1 END AS y,
                s.excess_fwd
         FROM cand_pool cp
+        JOIN decision_dates dd ON dd.t = cp.t
         JOIN stock_at_t s ON s.t = cp.t AND s.stock_code = cp.stock_code
         JOIN prof pr ON pr.customer_id = cp.customer_id
         LEFT JOIN cust_pit cu ON cu.t = cp.t AND cu.customer_id = cp.customer_id
@@ -292,12 +313,16 @@ def main():
            {pw["graph"]} * graph_score + {pw["suitability"]} * suitability_score +
            {pw["history"]} * historical_preference AS personalization_score
     FROM b;
-    """)
+    """,
+        slice_tables=(*PIT_JOINS, "pos", "_peer_buy", "future_buy"),
+    )
 
     # ---------- Danh mục: model học hành vi SELL, research quyết định action ----------
     log("s4", "dựng train_portfolio cho các mã khách đang sở hữu...")
     rs = RESEARCH_SELL_SIGNAL
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE train_portfolio AS
     WITH b AS (
     SELECT p.t, p.dn, p.customer_id, p.stock_code,
@@ -360,6 +385,7 @@ def main():
            CASE WHEN fs.stock_code IS NULL THEN 0 ELSE 1 END AS y,
            s.excess_fwd
     FROM pos p
+    JOIN decision_dates dd ON dd.t = p.t
     JOIN stock_at_t s ON s.t = p.t AND s.stock_code = p.stock_code
     JOIN prof pr ON pr.customer_id = p.customer_id
     LEFT JOIN port_pit pp ON pp.t = p.t AND pp.customer_id = p.customer_id
@@ -399,7 +425,9 @@ def main():
                                 ORDER BY days_since_stock DESC)
                                                              AS recency_rank_in_port
     FROM b;
-    """)
+    """,
+        slice_tables=(*PIT_JOINS, "_peer_port", "future_sell"),
+    )
 
     for tb in ["train_buy", "train_portfolio"]:
         n, n_labeled, pos_rate = con.execute(f"""

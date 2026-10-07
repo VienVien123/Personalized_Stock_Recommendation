@@ -25,6 +25,7 @@ from config import (
     RECENT_WINDOW,
     SHORT_HOLD_DAYS,
     connect,
+    create_by_date_chunks,
     log,
 )
 
@@ -219,7 +220,9 @@ def main():
                      AND (pc.close_d IS NULL OR pc.close_d >= x.d)) AS in_phs
     FROM txn x;
     """)
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE cust_pit AS
     SELECT dd.t, x.customer_id,
            COUNT(*)                                            AS n_trades,
@@ -246,13 +249,16 @@ def main():
     FROM decision_dates dd
     JOIN _txn_phs x ON x.d < dd.t
     GROUP BY 1, 2;
-    """)
+    """,
+    )
     # ---------- 3a. Ch?t l??ng mua theo PHS ----------
     # `phs_follow_rate` ? tr?n ch? tr? l?i "kh?ch c? hay mua theo PHS kh?ng?". B?ng n?y
     # tr? l?i th?m "nh?ng l?n mua theo PHS ?? ?? HORIZON tr??c t th? k?t qu? ra sao?".
     # ?i?u ki?n s.dn + HORIZON <= dd.dn ch?n r? r?: t?i t ch? d?ng c?c l?nh ?? bi?t
     # k?t qu? 20 phi?n.
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE cust_phs_quality AS
     SELECT dd.t, x.customer_id,
            COUNT(*) AS phs_scored_buys,
@@ -268,7 +274,8 @@ def main():
     JOIN sd s ON s.stock_code = x.stock_code AND s.d = x.d
     WHERE s.dn + {HORIZON} <= dd.dn
     GROUP BY 1, 2;
-    """)
+    """,
+    )
     con.execute("DROP TABLE IF EXISTS _txn_phs;")
 
     # ---------- 3b. Kỳ hạn đầu tư suy ra từ thời gian nắm giữ ----------
@@ -285,7 +292,9 @@ def main():
     #   được (ngắn / giữ 1-3 tháng / dài): LEAN_SHORT, MEDIUM, LEAN_LONG.
     # UNRATED chỉ còn dành cho khách thật sự thiếu bằng chứng.
     log("s2", "kỳ hạn đầu tư & thói quen chốt lời/cắt lỗ của khách...")
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE cust_horizon AS
     WITH ev AS (
         SELECT dd.t, e.customer_id,
@@ -343,13 +352,16 @@ def main():
                 WHEN n_long  > n_mid AND n_long  > n_short THEN 'LEAN_LONG'
                 ELSE 'MEDIUM' END AS investment_horizon
     FROM a;
-    """)
+    """,
+    )
 
     # ---------- 4. "Tay nghề" khách trong quá khứ ----------
     # Tỷ lệ lệnh MUA trước đây mà 20 phiên sau mã đó thắng VNINDEX.
     # Chỉ tính các lệnh đã ĐỦ 20 phiên TRƯỚC t, nếu không sẽ rò rỉ tương lai.
     log("s2", "tỷ lệ chọn đúng mã trong quá khứ (đã chặn rò rỉ)...")
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE cust_skill AS
     SELECT dd.t, x.customer_id,
            AVG(CAST(s.y_stock AS DOUBLE)) AS hist_hit_rate,
@@ -359,11 +371,14 @@ def main():
     JOIN sd  s ON s.stock_code = x.stock_code AND s.d = x.d
     WHERE s.dn + {HORIZON} <= dd.dn
     GROUP BY 1, 2;
-    """)
+    """,
+    )
 
     # ---------- 5. Khẩu vị ngành tới t ----------
     log("s2", "khẩu vị ngành ICB tới mỗi mốc...")
-    con.execute("""
+    create_by_date_chunks(
+        con,
+        """
     CREATE OR REPLACE TABLE cust_sector AS
     SELECT dd.t, x.customer_id, sc.icb_code,
            COUNT(*) AS n_icb,
@@ -372,11 +387,14 @@ def main():
     JOIN txn x  ON x.d < dd.t AND x.side = 'BUY'
     JOIN sec sc ON sc.stock_code = x.stock_code
     GROUP BY 1, 2, 3;
-    """)
+    """,
+    )
 
     # Kh?u v? ng?nh ??ng: ng?nh kh?ch mua g?n ??y c? ?ang l?ch kh?i kh?u v?
     # to?n l?ch s? kh?ng. C?c paper sequence/multi-view th??ng nh?n m?nh t?n hi?u n?y.
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE cust_sector_recent AS
     WITH a AS (
         SELECT dd.t, x.customer_id, sc.icb_code,
@@ -410,11 +428,14 @@ def main():
            ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
                AS icb_recent_shift_90d
     FROM a;
-    """)
+    """,
+    )
 
     # Chu?i mua g?n nh?t: m?/ng?nh ?ang x?t c? n?m trong 1/3/5 l?nh BUY g?n nh?t
     # c?a kh?ch kh?ng. T?ch stock v? sector ?? S4 gh?p v?i c? r? PHS v? danh m?c.
-    con.execute("""
+    create_by_date_chunks(
+        con,
+        """
     CREATE OR REPLACE TABLE cust_recent_stock_seq AS
     WITH r AS (
         SELECT dd.t, x.customer_id, x.stock_code,
@@ -433,7 +454,11 @@ def main():
            MIN(days_ago) AS days_since_last_buy_stock
     FROM r
     GROUP BY 1, 2, 3;
-
+    """,
+    )
+    create_by_date_chunks(
+        con,
+        """
     CREATE OR REPLACE TABLE cust_recent_sector_seq AS
     WITH r AS (
         SELECT dd.t, x.customer_id, sc.icb_code,
@@ -453,13 +478,16 @@ def main():
            MIN(days_ago) AS days_since_last_buy_same_sector
     FROM r
     GROUP BY 1, 2, 3;
-    """)
+    """,
+    )
 
     # ---------- 6. Phong cách đầu tư lịch sử ----------
     # Học từ trạng thái thị trường NGAY TRƯỚC các lệnh BUY cũ. Trọng số giảm một
     # nửa sau BEHAVIOR_HALF_LIFE ngày, giống ý tưởng style profile trong notebook.
     log("s2", "phong cách biến động/đà giá/thanh khoản của khách...")
-    con.execute(f"""
+    create_by_date_chunks(
+        con,
+        f"""
     CREATE OR REPLACE TABLE cust_style AS
     WITH z AS (
         SELECT dd.t, x.customer_id, s.ret_20, s.vol_20,
@@ -478,11 +506,14 @@ def main():
            SUM(log_turnover * w) / NULLIF(SUM(CASE WHEN log_turnover IS NOT NULL THEN w ELSE 0 END), 0)
                AS preferred_log_turnover
     FROM z GROUP BY 1, 2;
-    """)
+    """,
+    )
 
     # ---------- 7. Quan hệ khách x mã tới t ----------
     log("s2", "lịch sử khách x mã tới mỗi mốc...")
-    con.execute("""
+    create_by_date_chunks(
+        con,
+        """
     CREATE OR REPLACE TABLE cust_stock_pit AS
     SELECT dd.t, x.customer_id, x.stock_code,
            COUNT(*)                          AS n_trades_stock,
@@ -499,7 +530,8 @@ def main():
     FROM decision_dates dd
     JOIN txn x ON x.d < dd.t
     GROUP BY 1, 2, 3;
-    """)
+    """,
+    )
 
     for t in [
         "hold_episode",
