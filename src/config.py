@@ -108,7 +108,10 @@ DUCKDB_MEMORY = os.getenv("DUCKDB_MEMORY", "3GB")
 # DuckDB dùng thêm bộ nhớ ngoài memory_limit theo từng luồng. Với 12 luồng, bước S4
 # từng chạm 4,7 GB trên trần 5 GB của container và bị kill ngẫu nhiên (exit 137).
 DUCKDB_THREADS = int(os.getenv("DUCKDB_THREADS", "4"))
-TMP_DIR = os.path.join(OUT_DIR, "tmp")
+# Chỗ DuckDB tràn dữ liệu ra đĩa. Để trong container, không để trong artifacts/:
+# thư mục đó gắn từ máy chủ (trên Windows đi qua lớp chia sẻ file) nên ghi chậm và
+# từng làm s2 hỏng với "Cannot allocate memory".
+TMP_DIR = os.getenv("DUCKDB_TEMP_DIR", "/tmp/duckdb_spill")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(TMP_DIR, exist_ok=True)

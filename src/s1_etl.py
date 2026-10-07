@@ -166,7 +166,7 @@ def main():
     #   SELL : PHS chốt lời/cắt lỗ đúng ngày t.
     #   HOLD : khuyến nghị BUY cũ còn mở, chưa có tín hiệu mới trong ngày.
     # Không lặp lại BUY cũ thành khuyến nghị mua mới ở các ngày sau.
-    con.execute(f"""
+    con.execute("""
     CREATE OR REPLACE TABLE research AS
     WITH buy AS (
         SELECT dd.t AS d, pc.stock_code, 'BUY' AS recommendation, 'BUY' AS call_type,

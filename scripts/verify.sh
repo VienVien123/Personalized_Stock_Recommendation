@@ -13,6 +13,9 @@
 # rồi ĐỌC LẠI dữ liệu gốc để đối chiếu. Bằng chứng ghi vào artifacts/verify_report.json.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Git Bash trên Windows tự đổi "/app/src/..." thành "C:/Program Files/Git/app/src/..."
+# khi truyền cho docker; tắt việc đổi đường dẫn đó.
+export MSYS_NO_PATHCONV=1
 
 MODE="${1:-quick}"
 RERUN="${2:-}"

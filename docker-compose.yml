@@ -26,6 +26,9 @@ services:
     build: .
     container_name: vv-app
     restart: unless-stopped
+    # Python chạy làm PID 1 sẽ bỏ qua SIGTERM: mỗi lần DAG dừng app phải chờ 30s rồi
+    # bị kill (mã 137). tini chuyển tín hiệu để app tắt gọn ngay.
+    init: true
     depends_on:
       neo4j:
         condition: service_healthy

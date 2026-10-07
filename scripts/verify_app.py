@@ -112,7 +112,9 @@ def doctor(con):
             SELECT 1 FROM phs_calls pc
             WHERE pc.stock_code = b.stock_code AND pc.open_d = b.t)""",
     )
-    check("mọi ứng viên MUA là mã PHS mới BUY đúng ngày t", bad == 0, f"{bad:,} dòng sai")
+    check(
+        "mọi ứng viên MUA là mã PHS mới BUY đúng ngày t", bad == 0, f"{bad:,} dòng sai"
+    )
 
     drv = GraphDatabase.driver(
         NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD), notifications_min_severity="OFF"

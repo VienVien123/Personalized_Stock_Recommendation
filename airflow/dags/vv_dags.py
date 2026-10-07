@@ -29,6 +29,7 @@ IMAGE = os.getenv("PIPELINE_IMAGE", "personalized_stock_recommendation-app")
 NETWORK = os.getenv("PIPELINE_NETWORK", "personalized_stock_recommendation_default")
 DOCKER_URL = os.getenv("DOCKER_URL", "tcp://docker-proxy:2375")
 APP_CONTAINER = os.getenv("APP_CONTAINER", "vv-app")
+DOCKER_POOL = "docker_tasks"
 START = pendulum.datetime(2026, 10, 1, tz="Asia/Ho_Chi_Minh")
 
 
@@ -64,6 +65,9 @@ def in_app_image(task_id, command, mounts, **kwargs):
         mount_tmp_dir=False,
         auto_remove="force",
         mem_limit="5g",
+        # Pool 1 chỗ (tạo trong start.sh): mỗi lúc chỉ một container chạy, để test
+        # của CI không chen vào lúc pipeline đang dùng gần hết RAM của Docker.
+        pool=DOCKER_POOL,
         **kwargs,
     )
 
