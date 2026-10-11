@@ -490,6 +490,12 @@ def build_style(con):
     các lệnh BUY cũ; lệnh càng lớn càng nặng ký, và trọng số giảm một nửa sau mỗi
     BEHAVIOR_HALF_LIFE ngày."""
     log("s2", "phong cách biến động/đà giá/thanh khoản của khách...")
+    # trung bình có trọng số w, bỏ qua các lệnh thiếu giá trị của cột đó
+    preferred = ",\n           ".join(
+        f"SUM({c} * w) / NULLIF(SUM(CASE WHEN {c} IS NOT NULL THEN w ELSE 0 END), 0)"
+        f" AS preferred_{c}"
+        for c in ("ret_20", "vol_20", "log_turnover")
+    )
     create_by_date_chunks(
         con,
         f"""
@@ -504,12 +510,7 @@ def build_style(con):
         JOIN sd s ON s.stock_code = x.stock_code AND s.d = x.d
     )
     SELECT t, customer_id,
-           SUM(ret_20 * w) / NULLIF(SUM(CASE WHEN ret_20 IS NOT NULL THEN w ELSE 0 END), 0)
-               AS preferred_ret_20,
-           SUM(vol_20 * w) / NULLIF(SUM(CASE WHEN vol_20 IS NOT NULL THEN w ELSE 0 END), 0)
-               AS preferred_vol_20,
-           SUM(log_turnover * w) / NULLIF(SUM(CASE WHEN log_turnover IS NOT NULL THEN w ELSE 0 END), 0)
-               AS preferred_log_turnover
+           {preferred}
     FROM z GROUP BY 1, 2;
     """,
     )

@@ -1,9 +1,5 @@
-"""Cấu hình dùng chung.
-
-Tham số bài toán và tài nguyên là hằng số cố định ở đây; muốn đổi thì sửa file này.
-Chỉ đường dẫn, tài khoản Neo4j và các biến của chế độ chạy mẫu (scripts/verify.sh
-sample) còn đọc từ biến môi trường.
-"""
+"""Cấu hình dùng chung. Tham số là hằng số cố định — muốn đổi thì sửa file này.
+Chỉ đường dẫn và tài khoản Neo4j đọc từ biến môi trường."""
 
 import os
 import re
@@ -16,121 +12,55 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "changeme")  # giá trị thật nằm trong .env
 
-HORIZON = 20  # số phiên nhìn tới (nhãn)
-TOPK = 10
-# Nhịp ra quyết định: từng phiên giao dịch. Có thể chuyển về phiên cuối
-# mỗi "week" hoặc "month" để so sánh với các phiên bản cũ.
-DECISION_FREQ = "day"
-if DECISION_FREQ not in ("day", "week", "month"):
-    raise ValueError("DECISION_FREQ phải là 'day', 'week' hoặc 'month'")
-COOC_WINDOW = 180  # cửa sổ đồng mua (ngày)
-COOC_TOPN = 25  # số mã đồng mua mạnh nhất / mã
-
-# Điểm cuối cho nhánh MUA = MARKET_WEIGHT * điểm nghiên cứu
-#                              + (1-MARKET_WEIGHT) * điểm hành vi khách.
+# ---------- Bài toán ----------
+# Mỗi phiên giao dịch là một mốc ra quyết định t.
+HORIZON = 20  # số phiên nhìn tới để gắn nhãn
+TOPK = 10  # số mã BUY hiển thị trên app
+# Điểm cuối nhánh MUA = MARKET_WEIGHT * điểm PHS + (1 - MARKET_WEIGHT) * điểm hành vi
 MARKET_WEIGHT = 0.60
-BEHAVIOR_HALF_LIFE = 90
+BEHAVIOR_HALF_LIFE = 90  # sau bấy nhiêu ngày, trọng số một lệnh cũ giảm một nửa
+RECENT_WINDOW = 90  # cửa sổ (ngày) đo mức độ giao dịch gần đây của khách
+BUY_FEE = 0.0015  # phí mua tính vào giá vốn — khớp avg_cost trong customer_holdings.csv
 
-if not 0 <= MARKET_WEIGHT <= 1:
-    raise ValueError("MARKET_WEIGHT phải nằm trong [0, 1]")
+# Kỳ hạn đầu tư suy ra từ thời gian nắm giữ thực tế (xem s2_state.build_horizon)
+SHORT_HOLD_DAYS = 30  # bán hết trong <= 1 tháng -> bằng chứng ngắn hạn
+LONG_HOLD_DAYS = 90  # giữ > 3 tháng -> bằng chứng dài hạn
+HOLD_EVIDENCE_THRESHOLD = 0.50  # tỷ lệ bằng chứng tối thiểu để kết luận SHORT / LONG
+HOLD_MIN_EVIDENCE = 3  # số vòng mua-bán tối thiểu trước khi dám kết luận
 
-# Phân loại kỳ hạn đầu tư của khách từ thời gian nắm giữ thực tế (xem s2_state).
-SHORT_HOLD_DAYS = 30  # bán hết trong <= 1 tháng
-LONG_HOLD_DAYS = 90  # giữ > 3 tháng
-# tỷ lệ bằng chứng tối thiểu để kết luận khách SHORT hoặc LONG
-HOLD_EVIDENCE_THRESHOLD = 0.50
-# số vòng mua-bán tối thiểu trước khi dám kết luận
-HOLD_MIN_EVIDENCE = 3
-# cửa sổ (ngày) đo mức độ giao dịch gần đây của khách
-RECENT_WINDOW = 90
+# ---------- Đồ thị (S3) ----------
+COOC_WINDOW = 180  # mỗi lát cắt nhìn bấy nhiêu ngày giao dịch trước đó
+COOC_TOPN = 25  # số mã đồng mua mạnh nhất giữ lại cho mỗi mã
+PEER_TOPK = 20  # số khách tương tự giữ lại cho mỗi khách
+PEER_MIN_SHARED = 2  # số mã mua chung tối thiểu để hai khách được coi là giống
+GRAPH_WORKERS = 2  # số lát cắt gửi tới Neo4j cùng lúc
 
-if not 0 < SHORT_HOLD_DAYS < LONG_HOLD_DAYS:
-    raise ValueError("Cần 0 < SHORT_HOLD_DAYS < LONG_HOLD_DAYS")
-if not 0 < HOLD_EVIDENCE_THRESHOLD <= 1:
-    raise ValueError("HOLD_EVIDENCE_THRESHOLD phải nằm trong (0, 1]")
-
-# Phí mua tính vào giá vốn (0,15%) — khớp với avg_cost trong customer_holdings.csv.
-BUY_FEE = 0.0015
-
-# ---------- Đồ thị: khách tương tự (Neo4j) ----------
-# số khách tương tự giữ lại cho mỗi khách, và số mã chung tối thiểu để tính là giống
-PEER_TOPK = 20
-PEER_MIN_SHARED = 2
-
-# số lát cắt thời gian gửi tới Neo4j cùng lúc ở bước S3
-GRAPH_WORKERS = 2
-
-# ---------- Trọng số đặt tay của các điểm thành phần ----------
-# Gom về một chỗ để dễ thử nghiệm. Các điểm này chỉ là ĐẶC TRƯNG đưa vào model
-# hành vi; điểm cuối vẫn do MARKET_WEIGHT ở trên quyết định.
-# graph_score = cooc * đồng mua + buyer_pop * độ phổ biến
+# ---------- Trọng số đặt tay của các điểm thành phần (chỉ là ĐẶC TRƯNG cho model) ----------
 GRAPH_SCORE_WEIGHTS = {"cooc": 0.75, "buyer_pop": 0.25}
-# historical_preference = tỷ trọng giá trị mua + tỷ trọng số lệnh mua + độ gần đây
 HISTORY_PREF_WEIGHTS = {"value_share": 0.40, "count_share": 0.30, "recency": 0.30}
-# personalization_score = graph + phù hợp phong cách + lịch sử đúng mã
 PERSONALIZATION_WEIGHTS = {"graph": 0.50, "suitability": 0.30, "history": 0.20}
 # độ rộng (mẫu số trong EXP(-|lệch| / scale)) khi so mã với phong cách của khách
 STYLE_SCALES = {"vol_20": 0.03, "ret_20": 0.15, "log_turnover": 5.0}
-# Nhánh danh mục: bậc của tín hiệu nghiên cứu và mức behavior được phép phá hoà.
-# RESEARCH_TIEBREAK < 0.5 để behavior không lật được thứ tự giữa hai bậc.
+# Nhánh danh mục: bậc của tín hiệu PHS; behavior chỉ phá hoà trong cùng bậc
+# (RESEARCH_TIEBREAK < 0.5 nên không lật được thứ tự giữa hai bậc).
 RESEARCH_SELL_SIGNAL = {"SELL": 1.5, "BUY": 0.5, "HOLD": 0.0, "NONE": -0.5}
 RESEARCH_TIEBREAK = 0.49
 
-for _name, _w in (
-    ("GRAPH_SCORE_WEIGHTS", GRAPH_SCORE_WEIGHTS),
-    ("HISTORY_PREF_WEIGHTS", HISTORY_PREF_WEIGHTS),
-    ("PERSONALIZATION_WEIGHTS", PERSONALIZATION_WEIGHTS),
-):
-    if abs(sum(_w.values()) - 1.0) > 1e-9:
-        raise ValueError(f"{_name} phải có tổng bằng 1")
+# ---------- Huấn luyện ----------
+EVAL_KS = (1, 3)  # các mức K để đo xếp hạng
+# Model danh mục chỉ học trên mỗi phiên thứ 5: bảng train_portfolio ~8,7 triệu dòng,
+# nạp hết vượt trần 5 GB RAM, mà các phiên liền nhau gần như lặp lại nhau.
+PORTFOLIO_TRAIN_STRIDE = 5
 
-# ---------- Huấn luyện & đánh giá ----------
-# Các mức K để đo xếp hạng, không phụ thuộc TOPK hiển thị trong app.
-EVAL_KS = (1, 3)
-# Lưới MARKET_WEIGHT được đo lại sau mỗi lần chạy (eval_buy_weights.csv).
-MARKET_WEIGHT_GRID = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
-
-# Model danh mục chỉ học / đánh giá trên mỗi mốc thứ PORTFOLIO_TRAIN_STRIDE (tính theo
-# số thứ tự phiên). Ở nhịp ngày bảng train_portfolio có ~8,7 triệu dòng: nạp hết vào
-# pandas + LightGBM vượt trần 5 GB của container (exit 137), trong khi các mốc liền
-# nhau gần như lặp lại nhau (cửa sổ nhãn 20 phiên chồng lên nhau). 5 ở nhịp ngày
-# (tương đương nhịp tuần), 1 ở các nhịp khác. App vẫn chấm điểm ở mọi mốc.
-PORTFOLIO_TRAIN_STRIDE = 5 if DECISION_FREQ == "day" else 1
-if PORTFOLIO_TRAIN_STRIDE < 1:
-    raise ValueError("PORTFOLIO_TRAIN_STRIDE phải >= 1")
-
-# ---------- Chế độ chạy nhanh & thử nghiệm ----------
-# % khách hàng giữ lại (chọn cố định theo mã khách). 100 = toàn bộ. Nhỏ hơn 100 là
-# chế độ chạy nhanh: phải đặt kèm OUT_DIR / DUCKDB_PATH riêng để không ghi đè kết quả
-# thật — dùng `scripts/verify.sh sample`, đừng đặt trong .env.
-SAMPLE_PCT = int(os.getenv("SAMPLE_PCT", "100"))
-SAMPLE_SEED = os.getenv("SAMPLE_SEED", "0")
-if not 1 <= SAMPLE_PCT <= 100:
-    raise ValueError("SAMPLE_PCT phải nằm trong [1, 100]")
-# "neo4j": đồ thị thật (mặc định). "sql": cùng phép tính bằng DuckDB, không cần Neo4j.
-GRAPH_BACKEND = os.getenv("GRAPH_BACKEND", "neo4j").strip().lower()
-if GRAPH_BACKEND not in ("neo4j", "sql"):
-    raise ValueError("GRAPH_BACKEND phải là 'neo4j' hoặc 'sql'")
-# Phép thử có/không: danh sách đặc trưng (cách nhau dấu phẩy, nhận mẫu kiểu peer_*)
-# bị bỏ khỏi cả hai model. Rỗng = dùng mọi đặc trưng.
-ABLATE_FEATURES = [
-    x.strip() for x in os.getenv("ABLATE_FEATURES", "").split(",") if x.strip()
-]
-
+# ---------- Tài nguyên ----------
 GRADIO_PORT = 7860
-
+# Container có 5 GB RAM: DuckDB dùng 3 GB + phần thêm theo từng luồng.
 DUCKDB_MEMORY = "3GB"
-# DuckDB dùng thêm bộ nhớ ngoài memory_limit theo từng luồng. Với 12 luồng, bước S4
-# từng chạm 4,7 GB trên trần 5 GB của container và bị kill ngẫu nhiên (exit 137).
 DUCKDB_THREADS = 4
-# Số mốc quyết định xử lý mỗi lô khi S2/S4 ghép "mọi mốc x lịch sử trước mốc". Ở nhịp
-# ngày có khoảng 1.000 mốc; ghép một lần thì container hết RAM (exit 137).
+# S2/S4 ghép "mọi mốc x lịch sử trước mốc" theo lô bấy nhiêu mốc, không thì hết RAM.
 DATE_CHUNK = 25
-if DATE_CHUNK < 1:
-    raise ValueError("DATE_CHUNK phải >= 1")
-# Chỗ DuckDB tràn dữ liệu ra đĩa. Để trong container, không để trong artifacts/:
-# thư mục đó gắn từ máy chủ (trên Windows đi qua lớp chia sẻ file) nên ghi chậm và
-# từng làm s2 hỏng với "Cannot allocate memory".
+# Chỗ DuckDB tràn dữ liệu ra đĩa — trong container, không trong artifacts/ (thư mục
+# gắn từ Windows ghi chậm và từng làm s2 hỏng với "Cannot allocate memory").
 TMP_DIR = os.getenv("DUCKDB_TEMP_DIR", "/tmp/duckdb_spill")
 
 os.makedirs(OUT_DIR, exist_ok=True)

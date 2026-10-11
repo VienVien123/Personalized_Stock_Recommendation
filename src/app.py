@@ -69,11 +69,6 @@ SCORING = {
     "behavior": "Chỉ model hành vi",
     "final": "Điểm cuối (đang dùng)",
 }
-AUDIT_ROWS = {  # khoá -> (nhãn, có phải tỷ lệ phần trăm không)
-    "basket_excess": ("Cả rổ PHS BUY mới so với VNINDEX", True),
-    "top_minus_basket": ("Mã MarketScore cao nhất so với trung bình rổ", True),
-    "rank_ic": ("Tương quan hạng giữa MarketScore và lợi suất", False),
-}
 
 
 def ranking_table(summary):
@@ -107,56 +102,10 @@ def ranking_table(summary):
     return "\n".join(lines) + "\n\n" + "\n".join(notes)
 
 
-def weights_table(weights):
-    """Nhánh MUA ở từng mức MARKET_WEIGHT, trên cùng một bộ dự đoán ngoài mẫu."""
-    lines = [
-        "### Nhánh MUA ở các mức MARKET_WEIGHT khác nhau\n",
-        "Cùng một bộ dự đoán ngoài mẫu, chỉ đổi tỷ lệ trộn. 0 = chỉ hành vi, "
-        "1 = chỉ MarketScore.\n",
-        "| MARKET_WEIGHT | HitRate@1 | NDCG@3 | Precision@1 | "
-        "Lợi suất vượt trội của mã đầu |",
-        "|---:|---:|---:|---:|---:|",
-    ]
-    for row in weights:
-        current = abs(row["market_weight"] - MARKET_WEIGHT) < 1e-9
-        lines.append(
-            f"| {row['market_weight']:.1f}{' ← đang dùng' if current else ''} "
-            f"| {fmt(row.get('hit@1'))} | {fmt(row.get('ndcg@3'))} "
-            f"| {fmt(row.get('precision@1'))} | {signed_pct(row.get('excess@1'))} |"
-        )
-    return "\n".join(lines)
-
-
-def audit_table(audit):
-    """MarketScore có dự báo lợi suất không — đo trên rổ PHS BUY mới."""
-    lines = [
-        "### MarketScore có dự báo lợi suất không?\n",
-        f"Lợi suất vượt VNINDEX sau {audit['horizon']} phiên, mỗi mốc là một quan sát. "
-        "Sai số chuẩn đã nới theo số cửa sổ không chồng nhau. |t| dưới 2 nghĩa là "
-        "chưa đủ bằng chứng.\n",
-        "| Phép đo | Số mốc | Trung bình | Sai số chuẩn | t | Tỷ lệ mốc dương |",
-        "|---|---:|---:|---:|---:|---:|",
-    ]
-    for key, (label, as_pct) in AUDIT_ROWS.items():
-        m = audit.get(key) or {}
-        if "mean" not in m:
-            continue
-        mean = signed_pct(m["mean"]) if as_pct else f"{m['mean']:+.3f}"
-        se = f"{100 * m['se']:.2f}%" if as_pct else f"{m['se']:.3f}"
-        lines.append(
-            f"| {label} | {m['n']} | {mean} | {se} | {fmt(m.get('t_stat'), 2)} "
-            f"| {m['share_positive']:.0%} |"
-        )
-    return "\n".join(lines)
-
-
 def performance_markdown(summary):
-    freq = {"day": "ngày", "week": "tuần", "month": "tháng"}.get(
-        summary.get("decision_freq"), "?"
-    )
     sections = [
         "### Hiệu quả walk-forward theo quý (dự đoán ngoài mẫu)",
-        f"Mốc quyết định theo **{freq}**. Nhánh BUY chỉ xét mã PHS vừa mở khuyến "
+        f"Mỗi phiên là một mốc quyết định. Nhánh BUY chỉ xét mã PHS vừa mở khuyến "
         f"nghị `BUY` trong đúng ngày đó. Điểm cuối = **{MARKET_WEIGHT:.0%} MarketScore + "
         f"{1 - MARKET_WEIGHT:.0%} hành vi**, trong đó MarketScore = dư địa tăng từ "
         "giá hiện tại tới giá mục tiêu.",
@@ -165,16 +114,9 @@ def performance_markdown(summary):
         "nhóm chỉ có 1 ứng viên bị loại vì luôn đạt 1,0. Số liệu gộp mọi nhóm của "
         "mọi quý.",
         ranking_table(summary),
-    ]
-    weights = (summary.get("buy") or {}).get("weights")
-    if weights:
-        sections.append(weights_table(weights))
-    if summary.get("market_score_audit"):
-        sections.append(audit_table(summary["market_score_audit"]))
-    sections.append(
         "Các thước đo trên đo mức phù hợp hành vi. Tín hiệu MUA / chốt lời / cắt lỗ "
-        "là đầu vào từ khuyến nghị PHS, không phải do model hành vi tự tạo."
-    )
+        "là đầu vào từ khuyến nghị PHS, không phải do model hành vi tự tạo.",
+    ]
     return "\n\n".join(sections)
 
 
@@ -364,8 +306,6 @@ def build():
             )
         with gr.Tab("Hiệu quả model"):
             gr.Markdown(perf)
-    # Để scripts/verify_app.py gọi thẳng hàm gợi ý, không phải đi qua giao diện.
-    ui.recommend = recommend
     return ui
 
 

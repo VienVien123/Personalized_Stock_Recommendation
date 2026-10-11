@@ -17,10 +17,7 @@ import pandas as pd
 
 from config import (
     DATA_DIR,
-    DECISION_FREQ,
     HORIZON,
-    SAMPLE_PCT,
-    SAMPLE_SEED,
     connect,
     log,
     write_table,
@@ -35,19 +32,6 @@ def read_csv(name: str, **kwargs) -> pd.DataFrame:
         float_precision="round_trip",
         **kwargs,
     )
-
-
-def keep_customers(con, ids: pd.Series) -> pd.Series:
-    """Cờ giữ lại SAMPLE_PCT % khách. Chọn theo băm của mã khách nên một khách hoặc
-    có đủ mọi giao dịch, hoặc vắng hẳn — lịch sử từng người không bị cắt."""
-    if SAMPLE_PCT >= 100:
-        return pd.Series(True, index=ids.index)
-    con.register("_ids", pd.DataFrame({"id": ids.unique()}))
-    kept = con.execute(
-        f"SELECT id FROM _ids WHERE HASH(id || '{SAMPLE_SEED}') % 100 < {SAMPLE_PCT}"
-    ).fetchall()
-    con.unregister("_ids")
-    return ids.isin({r[0] for r in kept})
 
 
 # ---------------------------------------------------------------- danh mục, giá
@@ -89,18 +73,8 @@ def trading_calendar(px: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"d": days, "dn": np.arange(1, len(days) + 1)})
 
 
-def pick_decision_dates(daycal: pd.DataFrame) -> pd.DataFrame:
-    """Mốc ra quyết định: mọi phiên (day) hoặc phiên cuối mỗi tuần / tháng."""
-    dates = daycal.rename(columns={"d": "t"})
-    if DECISION_FREQ == "day":
-        return dates
-    period = {"week": "W", "month": "M"}[DECISION_FREQ]
-    last = dates.groupby(dates["t"].dt.to_period(period))["t"].transform("max")
-    return dates[dates["t"] == last].reset_index(drop=True)
-
-
 # ---------------------------------------------------------------- khách hàng
-def load_transactions(con, px: pd.DataFrame) -> pd.DataFrame:
+def load_transactions(px: pd.DataFrame) -> pd.DataFrame:
     """Lệnh mua/bán của khách (giá đã là VND) + cờ giá nằm ngoài biên độ phiên."""
     text = ["transaction_id", "customer_id", "stock_code", "side", "exchange"]
     raw = read_csv(
@@ -108,7 +82,6 @@ def load_transactions(con, px: pd.DataFrame) -> pd.DataFrame:
         dtype=dict.fromkeys([*text, "execution_time"], str),
         parse_dates=["trade_date"],
     )
-    raw = raw[keep_customers(con, raw["customer_id"])]
     txn = pd.DataFrame(
         {
             "transaction_id": raw["transaction_id"],
@@ -136,7 +109,7 @@ def load_transactions(con, px: pd.DataFrame) -> pd.DataFrame:
     return txn
 
 
-def load_profiles(con) -> pd.DataFrame:
+def load_profiles() -> pd.DataFrame:
     """Hồ sơ khách: chỉ còn loại khách + ngày mở tài khoản. Kỳ hạn đầu tư không còn
     được khai báo sẵn mà suy ra từ hành vi nắm giữ thực tế ở s2 (cust_horizon)."""
     raw = read_csv(
@@ -144,13 +117,12 @@ def load_profiles(con) -> pd.DataFrame:
         dtype={"customer_id": str, "customer_type": str},
         parse_dates=["account_open_date"],
     )
-    raw = raw[keep_customers(con, raw["customer_id"])]
     return raw.rename(columns={"account_open_date": "open_date"})[
         ["customer_id", "customer_type", "open_date"]
     ]
 
 
-def load_holdings(con) -> pd.DataFrame:
+def load_holdings() -> pd.DataFrame:
     """Snapshot nắm giữ cuối tháng. Chỉ còn dùng để ĐỐI CHIẾU: vị thế tại mọi mốc được
     dựng lại từ giao dịch ở s2, và phải khớp với file này tại các ngày chốt tháng."""
     raw = read_csv(
@@ -158,7 +130,6 @@ def load_holdings(con) -> pd.DataFrame:
         dtype={"customer_id": str, "stock_code": str},
         parse_dates=["snapshot_date"],
     )
-    raw = raw[keep_customers(con, raw["customer_id"])]
     return pd.DataFrame(
         {
             "t": raw["snapshot_date"],
@@ -382,22 +353,15 @@ def price_features(px, idx, daycal) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- chạy
 def main():
-    con = connect()
-    if SAMPLE_PCT < 100:
-        log(
-            "s1",
-            f"CHẾ ĐỘ CHẠY NHANH: chỉ giữ {SAMPLE_PCT}% khách (seed {SAMPLE_SEED}).",
-        )
-
     log("s1", "đọc CSV thô...")
     sec = load_securities()
     px = load_prices()
     idx = load_index()
     daycal = trading_calendar(px)
-    dates = pick_decision_dates(daycal)
-    txn = load_transactions(con, px)
-    prof = load_profiles(con)
-    hold = load_holdings(con)
+    dates = daycal.rename(columns={"d": "t"})  # mỗi phiên là một mốc t
+    txn = load_transactions(px)
+    prof = load_profiles()
+    hold = load_holdings()
     calls = pair_phs_calls()
     research = research_signals(dates, calls, px)
 
@@ -417,6 +381,7 @@ def main():
         "research": (research, {"candidate_rank": "INTEGER"}),
         "sd": (sd, None),
     }
+    con = connect()
     for name, (df, casts) in tables.items():
         write_table(con, name, df, casts)
     con.execute("CREATE INDEX IF NOT EXISTS sd_idx ON sd(stock_code, dn);")
@@ -442,8 +407,7 @@ def report(tables: dict) -> None:
     n_seen = pairs.loc[open_at_t, ["stock_code", "open_d"]].drop_duplicates().shape[0]
     log(
         "s1",
-        f"  nhịp quyết định '{DECISION_FREQ}': {n_seen}/{len(calls)} khuyến nghị PHS "
-        "còn mở tại ít nhất một mốc",
+        f"  {n_seen}/{len(calls)} khuyến nghị PHS còn mở tại ít nhất một mốc",
     )
 
     n_buy = (

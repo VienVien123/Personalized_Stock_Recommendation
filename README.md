@@ -10,8 +10,7 @@ model hành vi chỉ xếp mức độ phù hợp của các tín hiệu đó v�
 
 ## 1. Bài toán cần giải quyết
 
-Tại mỗi mốc quyết định `t` — từng phiên giao dịch (mặc định), phiên cuối mỗi tuần hoặc cuối mỗi tháng, đặt bằng
-`DECISION_FREQ` — hệ thống trả lời hai câu hỏi:
+Tại mỗi mốc quyết định `t` — mỗi phiên giao dịch — hệ thống trả lời hai câu hỏi:
 
 1. Trong các mã research vừa đánh giá `BUY` đúng ngày `t`, mã nào phù hợp nhất với khách hàng?
 2. Với các mã khách đang sở hữu, mã nào nên `BÁN`, `CÓ THỂ MUA`, `GIỮ` hoặc `CHƯA CÓ TÍN HIỆU`?
@@ -517,8 +516,8 @@ Các biện pháp đang áp dụng:
 6. Mốc cuối dữ liệu chưa đủ `HORIZON` có `label_complete = 0` và bị loại khỏi train/test.
 7. Đánh giá theo thời gian, không chia train/test ngẫu nhiên.
 8. Có khoảng đệm `HORIZON` phiên giữa train và test: một dòng train chỉ được dùng khi cửa
-   sổ nhãn của nó đã kết thúc trước mốc test đầu tiên. Với nhịp tuần, nhãn của các mốc
-   liền nhau chồng lên nhau, nên thiếu khoảng đệm này là rò rỉ.
+   sổ nhãn của nó đã kết thúc trước mốc test đầu tiên. Nhãn của các mốc liền nhau chồng
+   lên nhau, nên thiếu khoảng đệm này là rò rỉ.
 9. Vị thế tại `t` được dựng từ các lệnh tới hết ngày `t`, không dùng snapshot tương lai.
 
 Các nguyên tắc trên được kiểm tra tự động (mục 16): test rò rỉ cắt bỏ toàn bộ dữ liệu sau
@@ -553,60 +552,21 @@ mọi quý**, không phải trung bình các quý.
 
 Các mức K cố định là 1 và 3 (`EVAL_KS`), không phụ thuộc `TOPK` hiển thị trong app.
 
-### Kết quả lần chạy gần nhất (nhịp tuần)
+### Kết quả lần chạy gần nhất (nhịp ngày, 11/10/2026)
 
 | Nhánh | Cách chấm điểm | HitRate@1 | NDCG@3 | MRR | Precision@1 |
 |---|---|---:|---:|---:|---:|
-| MUA | Chọn ngẫu nhiên | 0,192 | — | — | — |
-| MUA | Chỉ MarketScore | 0,192 | 0,409 | 0,438 | 0,013 |
-| MUA | Chỉ model hành vi | 0,486 | 0,676 | 0,670 | 0,029 |
-| MUA | Điểm cuối (60% MarketScore) | 0,340 | 0,551 | 0,560 | 0,021 |
 | Danh mục | Chọn ngẫu nhiên | 0,421 | — | — | — |
-| Danh mục | Chỉ tín hiệu PHS | 0,423 | 0,497 | 0,626 | 0,441 |
-| Danh mục | Chỉ model hành vi | 0,503 | 0,556 | 0,683 | 0,498 |
-| Danh mục | Điểm cuối (PHS trước, hành vi phá hoà) | 0,483 | 0,548 | 0,671 | 0,484 |
+| Danh mục | Chỉ tín hiệu PHS | 0,422 | 0,497 | 0,626 | 0,441 |
+| Danh mục | Chỉ model hành vi | 0,505 | 0,557 | 0,684 | 0,501 |
+| Danh mục | Điểm cuối (PHS trước, hành vi phá hoà) | 0,496 | 0,554 | 0,679 | 0,494 |
 
-- MUA: AUC 0,786, 11 quý test, 9.705 nhóm xếp hạng được trên 175.212 nhóm. Phần lớn nhóm
-  không xếp hạng được vì khách không mua mã nào trong rổ PHS: chỉ 1,8% lệnh mua thật của
-  khách rơi vào rổ.
-- Danh mục: AUC 0,766, 12 quý test, 152.474 nhóm xếp hạng được trên 210.809 nhóm.
-- Hai mục tiêu huấn luyện `binary` và `lambdarank` cho kết quả như nhau (MUA 0,486 / 0,485;
-  danh mục 0,503 / 0,505), nên giữ `binary` vì nó cho xác suất thật.
+- Danh mục: AUC 0,767, 12 quý test, 146.904 nhóm xếp hạng được.
+- MUA: AUC 0,763, 10 quý test, nhưng **không có nhóm nào xếp hạng được**: ở nhịp ngày, mỗi
+  ngày PHS gần như chỉ mở một khuyến nghị MUA mới, nên mỗi khách chỉ có một ứng viên. Chỉ còn
+  Precision@1 = 1,55%.
 
-### MARKET_WEIGHT đánh đổi cái gì?
-
-Sau mỗi lần chạy, `artifacts/eval_buy_weights.csv` đo lại điểm cuối nhánh MUA ở nhiều mức
-`MARKET_WEIGHT` trên cùng một bộ dự đoán ngoài mẫu:
-
-| MARKET_WEIGHT | HitRate@1 | NDCG@3 | Lợi suất vượt trội 20 phiên của mã xếp đầu |
-|---:|---:|---:|---:|
-| 0,0 (chỉ hành vi) | 0,486 | 0,676 | +2,57% |
-| 0,2 | 0,488 | 0,671 | +2,71% |
-| 0,4 | 0,474 | 0,647 | +2,83% |
-| 0,6 (mặc định) | 0,340 | 0,551 | +3,24% |
-| 0,8 | 0,241 | 0,465 | +3,50% |
-| 1,0 (chỉ MarketScore) | 0,192 | 0,409 | +3,79% |
-
-Tăng trọng số MarketScore thì mã xếp đầu có lợi suất cao hơn nhưng ít khớp với thứ khách
-thực sự mua hơn. Mức 0,4 giữ gần như toàn bộ độ khớp hành vi; từ 0,6 trở lên độ khớp giảm
-mạnh.
-
-### MarketScore có dự báo lợi suất không?
-
-`summary.json` có mục `market_score_audit`, đo trên chính rổ PHS đang mở. Mỗi mốc là một
-quan sát; sai số chuẩn đã được nới theo số cửa sổ 20 phiên không chồng nhau.
-
-| Phép đo | Số mốc | Trung bình | Sai số chuẩn | t |
-|---|---:|---:|---:|---:|
-| Cả rổ PHS BUY mới so với VNINDEX | 164 | +2,46% | 0,98% | 2,52 |
-| Mã MarketScore cao nhất so với trung bình rổ | 145 | +1,11% | 1,34% | 0,83 |
-| Tương quan hạng giữa MarketScore và lợi suất | 123 | +0,080 | 0,098 | 0,81 |
-
-Rổ khuyến nghị của PHS thắng VNINDEX một cách có ý nghĩa thống kê. Việc xếp hạng **bên
-trong** rổ bằng MarketScore có chiều hướng đúng nhưng chưa đủ bằng chứng (|t| < 2).
-
-Đây là các thước đo phù hợp hành vi và audit lợi suất quá khứ, không phải bằng chứng đảm
-bảo lợi nhuận.
+Đây là các thước đo phù hợp hành vi, không phải bằng chứng đảm bảo lợi nhuận.
 
 ## 12. Pipeline theo từng file
 
@@ -628,215 +588,102 @@ bảo lợi nhuận.
 
 ### Yêu cầu
 
-- Docker Desktop;
-- nên cấp ít nhất 8 GB RAM cho Docker (Neo4j ~2 GB, pipeline tối đa 5 GB, Airflow ~1,5 GB);
+- Docker Desktop, nên cấp ít nhất 8 GB RAM (Neo4j ~2 GB, pipeline tối đa 5 GB, Airflow ~1,5 GB);
 - đủ 7 file CSV trong thư mục `data/`.
 
 ### Tạo `.env`
-
-Nếu chưa có `.env`:
 
 ```cmd
 copy .env.example .env
 ```
 
-Đặt cùng một mật khẩu Neo4j ở hai biến:
+Điền mật khẩu (ít nhất 8 ký tự). `.env` đã được `.gitignore`, không bị push lên Git.
 
 ```env
 NEO4J_AUTH=neo4j/mat_khau_cua_ban
 NEO4J_PASSWORD=mat_khau_cua_ban
+AIRFLOW_ADMIN_USER=admin
+AIRFLOW_ADMIN_PASSWORD=mat_khau_cua_ban
 ```
 
-Mật khẩu phải có ít nhất 8 ký tự. `.env` đã được `.gitignore`, không được push lên Git.
+### Khởi động và chạy pipeline
 
-### Khởi động
+Chạy từ thư mục gốc của dự án (Airflow cần `${PWD}` để gắn thư mục vào các task):
 
 ```cmd
-cd /d "D:\RCM-STOCK\data\New folder"
 docker compose up -d --build
-docker compose logs -f app
+docker compose exec airflow airflow dags trigger pipeline_khuyen_nghi
 ```
 
-Lần đầu, chạy `scripts/verify.sh full --rerun` để dựng kết quả: ETL, nạp graph và huấn
-luyện nhiều fold mất khoảng 8–10 phút trên máy 12 nhân với 8 GB RAM cấp cho Docker. Khi lệnh
-báo xong, mở:
+Hoặc bấm chạy DAG `pipeline_khuyen_nghi` trên giao diện Airflow. Pipeline mất khoảng 20 phút;
+trong lúc đó app dừng, xong thì app tự bật lại. Chưa có kết quả thì app đứng chờ.
 
 - Ứng dụng: <http://localhost:7860>
 - Airflow: <http://localhost:8080>
 - Neo4j Browser: <http://localhost:7474>
 
-Nhấn `Ctrl+C` chỉ dừng theo dõi log, container vẫn chạy.
+### DAG `pipeline_khuyen_nghi`
 
-### Kiểm tra trạng thái
-
-```cmd
-docker compose ps
-docker compose logs --tail 200 app
-docker compose logs --tail 100 neo4j
+```text
+kiem_tra_du_lieu -> dung_app -> s1_etl -> s2_state -> s3_graph -> s4_features -> s5_train
+                 -> ghi_dau_hoan_tat -> bat_app
 ```
 
-### Chạy pipeline
-
-App chỉ phục vụ kết quả, không tự chạy pipeline. Lần đầu, và mỗi khi đổi dữ liệu hoặc sửa
-logic, chạy một trong hai:
-
-```cmd
-scripts/verify.sh full --rerun
-docker compose exec airflow airflow dags trigger pipeline_khuyen_nghi
-```
-
-Cả hai đều dừng app, chạy S1 → S5, bật lại app rồi kiểm tra kết quả. Khi chưa có kết quả
-đúng phiên bản, app đứng chờ và log ghi rõ cần chạy lệnh nào.
+- Mỗi bước chạy trong một container riêng tạo từ image của app; hỏng ở đâu thì bấm *Clear*
+  task đó để chạy lại từ bước hỏng.
+- App bị dừng trong lúc chạy (DuckDB chỉ cho một tiến trình ghi) và chỉ bật lại khi mọi
+  bước xong; hỏng giữa chừng thì app nằm yên, không phục vụ kết quả dở dang.
+- Airflow gắn thẳng `docker.sock` để điều khiển Docker (toàn quyền với Docker — không mở
+  cổng 8080 ra Internet).
 
 ## 14. Tham số cấu hình
 
-Các tham số dưới đây là hằng số cố định trong `src/config.py` (trừ hai biến Airflow nằm
-trong `.env`). Muốn đổi thì sửa trực tiếp file đó.
+Tham số là hằng số trong `src/config.py`; muốn đổi thì sửa file đó rồi chạy lại pipeline.
 
 | Tham số | Giá trị | Ý nghĩa |
 |---|---:|---|
-| `DECISION_FREQ` | day | Nhịp ra quyết định: `day`, `week` hoặc `month` |
 | `HORIZON` | 20 | Số phiên tương lai dùng để tạo nhãn hành vi |
-| `TOPK` | 10 | Số mã mua mới trả về |
+| `TOPK` | 10 | Số mã mua mới hiển thị trên app |
+| `MARKET_WEIGHT` | 0,60 | Trọng số MarketScore trong điểm mua cuối |
+| `BEHAVIOR_HALF_LIFE` | 90 | Sau bấy nhiêu ngày, trọng số một lệnh cũ giảm một nửa |
+| `RECENT_WINDOW` | 90 | Cửa sổ ngày đo nhịp giao dịch gần đây |
+| `BUY_FEE` | 0,0015 | Phí mua tính vào giá vốn khi dựng lại vị thế |
+| `SHORT_HOLD_DAYS` / `LONG_HOLD_DAYS` | 30 / 90 | Ngưỡng bằng chứng ngắn hạn / dài hạn |
+| `HOLD_EVIDENCE_THRESHOLD` | 0,50 | Tỷ lệ bằng chứng tối thiểu để xếp `SHORT`/`LONG` |
+| `HOLD_MIN_EVIDENCE` | 3 | Số vòng nắm giữ tối thiểu trước khi kết luận |
 | `COOC_WINDOW` | 180 | Cửa sổ ngày tính quan hệ graph |
 | `COOC_TOPN` | 25 | Số quan hệ đồng mua mạnh giữ lại mỗi mã |
-| `PEER_TOPK` | 20 | Số khách tương tự giữ lại cho mỗi khách |
-| `PEER_MIN_SHARED` | 2 | Số mã mua chung tối thiểu để hai khách được coi là tương tự |
-| `MARKET_WEIGHT` | 0,60 | Trọng số MarketScore trong điểm mua cuối |
-| `BUY_FEE` | 0,0015 | Phí mua tính vào giá vốn khi dựng lại vị thế |
-| `BEHAVIOR_HALF_LIFE` | 90 | Chu kỳ bán rã lịch sử giao dịch, đơn vị ngày |
-| `SHORT_HOLD_DAYS` | 30 | Bán hết trong số ngày này là bằng chứng ngắn hạn |
-| `LONG_HOLD_DAYS` | 90 | Giữ lâu hơn số ngày này là bằng chứng dài hạn |
-| `HOLD_EVIDENCE_THRESHOLD` | 0,50 | Tỷ lệ bằng chứng tối thiểu để xếp `SHORT`/`LONG` (tầng 1) |
-| `HOLD_MIN_EVIDENCE` | 3 | Số vòng nắm giữ tối thiểu trước khi kết luận |
-| `RECENT_WINDOW` | 90 | Cửa sổ ngày đo nhịp giao dịch gần đây |
-| `AIRFLOW_ADMIN_USER` | admin | Tài khoản đăng nhập giao diện Airflow |
-| `AIRFLOW_ADMIN_PASSWORD` | — | Mật khẩu Airflow, bắt buộc |
-| `DUCKDB_MEMORY` | 3GB | Giới hạn RAM DuckDB trong container |
-| `GRAPH_WORKERS` | 2 | Số lát cắt thời gian gửi tới Neo4j cùng lúc ở bước đồ thị |
-| `DUCKDB_THREADS` | 4 | Số luồng DuckDB; nhiều luồng hơn thì tốn RAM ngoài giới hạn trên |
-| `GRADIO_PORT` | 7860 | Cổng giao diện |
-
-Thay đổi feature, `HORIZON`, candidate hoặc trọng số cần chạy lại pipeline để kết quả
-đánh giá và model được đồng bộ. Riêng `DECISION_FREQ` nằm trong mã phiên bản của pipeline,
-nên đổi nhịp thì app chờ cho tới khi pipeline được chạy lại.
+| `PEER_TOPK` / `PEER_MIN_SHARED` | 20 / 2 | Số khách tương tự giữ lại; số mã chung tối thiểu |
+| `PORTFOLIO_TRAIN_STRIDE` | 5 | Model danh mục học trên mỗi phiên thứ 5 (giới hạn RAM) |
+| `DUCKDB_MEMORY` / `DUCKDB_THREADS` | 3GB / 4 | Giới hạn RAM và số luồng DuckDB |
 
 ## 15. Cấu trúc repository
 
 ```text
 data/                    dữ liệu CSV đầu vào
-src/                     source code pipeline và ứng dụng
-tests/                   test tự động, chạy trên dữ liệu giả, không cần Neo4j
-scripts/                 verify.sh — kiểm tra toàn bộ bằng một lệnh; chốt chặn chỉ số
-airflow/dags/            DAG Airflow: kiểm tra code khi có commit, chạy pipeline
-AGENTS.md                bản đồ repo, luật cứng và bằng chứng cần nộp khi sửa
-docs/                    phương pháp, khảo sát dữ liệu, kết quả chi tiết
+src/                     pipeline (s1..s5), app, cấu hình
+airflow/dags/            DAG chạy pipeline
 artifacts/               DuckDB/model sinh tự động, không commit
 docker-compose.yml       Neo4j + app + Airflow
 Dockerfile               image chạy Python
 requirements.txt         dependency runtime
-requirements-dev.txt     công cụ kiểm tra code
-pyproject.toml           cấu hình Ruff và pytest
+requirements-dev.txt     Ruff (lint + format)
 .env.example             mẫu cấu hình, không chứa mật khẩu thật
 ```
 
+Kiểm tra định dạng code: `ruff check src airflow && ruff format --check src airflow`.
 
-## 16. Kiểm tra chất lượng code
-
-Một lệnh, chạy trong image của project nên không cần cài Python trên máy:
-
-```bash
-scripts/verify.sh quick          # lint + test trên dữ liệu giả, vài giây, không cần Neo4j
-scripts/verify.sh full           # quick + kiểm tra hệ thống thật đang chạy
-scripts/verify.sh full --rerun   # ép chạy lại toàn bộ pipeline (~10 phút) rồi kiểm tra
-scripts/verify.sh sample 20      # pipeline thật trên 20% khách, 1–1,5 phút, không cần Neo4j
-```
-
-`sample` dùng để thử nhanh một thay đổi: kết quả ghi vào `artifacts/quick/`, đồ thị tính
-bằng SQL (`src/s3_graph_sql.py`, cho kết quả khớp từng dòng với Neo4j trên dữ liệu đầy đủ).
-Nó chỉ đáng tin cho thay đổi lớn; phép thử chính xác là chạy lại riêng bước S5 trên dữ liệu
-đầy đủ với `ABLATE_FEATURES` (xem `AGENTS.md` mục 3).
-
-`full` không chỉ xem app có lên hay không. Nó kiểm tra pipeline đã chạy đúng phiên bản, vị
-thế dựng lại khớp snapshot, đồ thị Neo4j khớp đúng bộ dữ liệu và khớp bản SQL, model hơn mức
-chọn ngẫu nhiên; rồi gọi hàm gợi ý của app cho 20 khách thật và **đọc lại dữ liệu gốc** để
-đối chiếu
-(mã MUA có đúng là khuyến nghị PHS còn mở, danh mục có đúng các mã khách đang nắm). Kết
-quả ghi vào `artifacts/verify_report.json`; lệnh thoát mã 1 nếu có kiểm tra không qua.
-
-### Airflow: chạy pipeline
-
-Dự án không dùng CI trên GitHub. `docker compose up -d` khởi động thêm Airflow tại
-<http://localhost:8080>, với DAG trong `airflow/dags/vv_dags.py`:
-
-| DAG | Khi nào chạy | Các bước |
-|---|---|---|
-| `pipeline_khuyen_nghi` | Bấm chạy tay | `kiem_tra_du_lieu` → `dung_app` → `s1_etl` … `s5_train` → `bat_app` → `kiem_tra_he_thong` → `chot_chan_chi_so` |
-
-```bash
-docker compose exec airflow airflow dags trigger pipeline_khuyen_nghi
-```
-
-Đăng nhập giao diện bằng tài khoản đặt trong `.env`:
-
-```env
-AIRFLOW_ADMIN_USER=admin
-AIRFLOW_ADMIN_PASSWORD=mat_khau_cua_ban
-```
-
-Đổi mật khẩu trong `.env` rồi chạy `docker compose up -d airflow` là mật khẩu được cập nhật.
-Thiếu `AIRFLOW_ADMIN_PASSWORD` thì Airflow không khởi động và log báo rõ lý do.
-
-- Mỗi task chạy trong một container riêng tạo từ image của app, nên môi trường giống hệt
-  `scripts/verify.sh`. Airflow gắn thẳng `docker.sock` để điều khiển Docker
-  (toàn quyền với Docker — không mở cổng 8080 ra Internet).
-- `pipeline_khuyen_nghi` chạy từng bước S1…S5 thành task riêng: biết ngay bước nào hỏng, mất
-  bao lâu, và chạy lại được từ bước hỏng. App bị dừng trong lúc chạy (DuckDB chỉ cho một
-  tiến trình ghi) và chỉ bật lại khi mọi bước xong.
-- `kiem_tra_he_thong` là đúng các kiểm tra của `verify.sh full`.
-- `chot_chan_chi_so` ghi kết quả mỗi lần chạy vào `artifacts/metrics_history.jsonl` và báo đỏ
-  nếu HitRate@1 của model hành vi giảm quá 0,02 so với lần trước, hoặc không còn hơn mức
-  chọn ngẫu nhiên.
-- Phải chạy `docker compose` từ thư mục gốc của dự án: Airflow cần biết đường dẫn dự án
-  trên máy chủ (`${PWD}`) để gắn thư mục vào các container task.
-
-Nếu có sẵn môi trường Python:
-
-```bash
-python -m pip install -r requirements-dev.txt
-ruff check src tests scripts airflow
-ruff format --check src tests scripts airflow
-python -m pytest
-```
-
-`AGENTS.md` ở gốc repo là bản đồ cho người và agent mới vào dự án: thứ gì nằm ở đâu, sửa
-loại nào thì phải nộp bằng chứng gì, các luật cứng và các quyết định đã chốt.
-
-Bộ test sinh một bộ dữ liệu giả nhỏ (30 khách, 12 mã, 2 năm) rồi chạy S1 → S2 → S4 → S5
-thật trên đó; bước đồ thị được thay bằng SQL tương đương nên **không cần Neo4j** và cả bộ
-chạy trong vài giây.
-
-| File test | Kiểm tra gì |
-|---|---|
-| `tests/test_validate.py` | Thiếu file, thiếu cột, số/ngày sai định dạng, `side` lạ, thiếu VNINDEX đều bị báo |
-| `tests/test_positions.py` | Giá vốn bình quân, phí mua, bán hết thì đặt lại; vị thế dựng lại khớp snapshot cuối tháng |
-| `tests/test_no_leak.py` | Cắt dữ liệu sau ngày `T` thì đặc trưng tại `t ≤ T` giữ nguyên; nhãn chỉ đến từ tương lai; ứng viên MUA luôn là mã PHS mới BUY đúng ngày |
-| `tests/test_metrics.py` | Thước đo xếp hạng, nhóm tầm thường không thổi phồng kết quả, khoảng đệm train/test |
-| `tests/test_metric_guard.py` | Chốt chặn chỉ số: giảm nhỏ thì qua, tụt mạnh hoặc không hơn ngẫu nhiên thì đỏ |
-| `tests/test_train_smoke.py` | Huấn luyện đầu-cuối, MarketScore không lọt vào model hành vi, app chấm điểm được |
-
-## 17. Giới hạn và lưu ý sử dụng
-
+## 16. Giới hạn và lưu ý sử dụng
 - Model học khả năng phù hợp/hành vi, không bảo đảm cổ phiếu sẽ sinh lời.
 - Chất lượng đầu tư phụ thuộc trực tiếp vào khuyến nghị PHS đầu vào.
 - Nếu mã đang nắm không có tín hiệu PHS tại `t`, hệ thống trả `CHƯA CÓ TÍN HIỆU` thay vì
   tự suy diễn BUY/SELL.
-- Rổ BUY của PHS rất nhỏ; ở các mốc không có khuyến nghị nào đang mở, nhánh mua mới
-  không trả kết quả. Chỉ 1,8% lệnh mua thật của khách rơi vào rổ, nên nhánh MUA trả lời
+- Rổ BUY của PHS rất nhỏ; ở các mốc không có khuyến nghị nào mới, nhánh mua mới
+  không trả kết quả. Chỉ 0,1% lệnh mua thật của khách rơi vào rổ, nên nhánh MUA trả lời
   câu hỏi "trong vài mã PHS đang khuyến nghị, mã nào hợp khách nhất" chứ không dự đoán
   khách sẽ mua gì.
 - Khách hầu như không bán theo lệnh đóng của PHS: xếp tín hiệu PHS lên trước làm HitRate@1
-  nhánh danh mục giảm từ 0,503 xuống 0,483. Thứ tự này là quy tắc nghiệp vụ, không phải
+  nhánh danh mục giảm từ 0,505 xuống 0,496. Thứ tự này là quy tắc nghiệp vụ, không phải
   lựa chọn tối ưu theo hành vi.
 - Trong danh mục của một khách, model chỉ đoán đúng mã bị bán đầu tiên ở 50% số nhóm so
   với 42% khi chọn ngẫu nhiên. Phần lớn sức dự báo đến từ việc phân biệt khách hay bán với

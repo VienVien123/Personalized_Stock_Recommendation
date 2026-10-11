@@ -3,11 +3,9 @@ artifacts/
 __pycache__/
 *.pyc
 .ruff_cache/
-.pytest_cache/
 .ipynb_checkpoints/
 .DS_Store
 data.zip
 test.md
-tests/
 docs/
 old/

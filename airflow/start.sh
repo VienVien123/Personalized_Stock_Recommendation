@@ -45,7 +45,7 @@ image = os.getenv("PIPELINE_IMAGE", "trade_hold-app")
 app = os.getenv("APP_CONTAINER", "vv-app")
 client = docker.from_env()
 for c in client.containers.list(all=True, filters={"ancestor": image}):
-    # Container có nhãn compose là app hoặc `docker compose run` (verify.sh) — không
+    # Container có nhãn compose là app hoặc `docker compose run` — không
     # phải của Airflow, không đụng tới.
     if c.name != app and "com.docker.compose.project" not in c.labels:
         print(f"xoá container mồ côi {c.name}: {c.attrs['Config']['Cmd']}")

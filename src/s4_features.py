@@ -284,7 +284,12 @@ def build_train_buy(con):
     để phép ghép không vượt trần bộ nhớ ở nhịp ngày.
     """
     log("s4", "dựng train_buy: MarketScore + graph + style + BUY/SELL history...")
-    hw, pw, sc = HISTORY_PREF_WEIGHTS, PERSONALIZATION_WEIGHTS, STYLE_SCALES
+    hw, pw = HISTORY_PREF_WEIGHTS, PERSONALIZATION_WEIGHTS
+    # mã gần với phong cách khách thích -> 1, càng lệch càng về 0; thiếu dữ liệu -> 0
+    style = [
+        f"COALESCE(EXP(-ABS(s.{c} - st.preferred_{c}) / {scale}), 0)"
+        for c, scale in STYLE_SCALES.items()
+    ]
     create_by_date_chunks(
         con,
         f"""
@@ -297,17 +302,7 @@ def build_train_buy(con):
                {hw["recency"]} * CASE WHEN csp.days_since_buy IS NULL THEN 0 ELSE
                     POWER(0.5, csp.days_since_buy * 1.0 / {BEHAVIOR_HALF_LIFE}) END
                     AS historical_preference,
-               (cp.icb_share +
-                CASE WHEN st.preferred_vol_20 IS NULL OR s.vol_20 IS NULL THEN 0
-                     ELSE EXP(-ABS(s.vol_20 - st.preferred_vol_20)
-                              / {sc["vol_20"]}) END +
-                CASE WHEN st.preferred_ret_20 IS NULL OR s.ret_20 IS NULL THEN 0
-                     ELSE EXP(-ABS(s.ret_20 - st.preferred_ret_20)
-                              / {sc["ret_20"]}) END +
-                CASE WHEN st.preferred_log_turnover IS NULL OR s.log_turnover IS NULL THEN 0
-                     ELSE EXP(-ABS(s.log_turnover - st.preferred_log_turnover)
-                              / {sc["log_turnover"]}) END
-               ) / 4.0 AS suitability_score,
+               (cp.icb_share + {" + ".join(style)}) / 4.0 AS suitability_score,
                -- khách tương tự vừa mua / bán chính mã này
                COALESCE(pb.peer_buy_score, 0)  AS peer_buy_score,
                COALESCE(pb.n_peer_buyers, 0)   AS n_peer_buyers,
