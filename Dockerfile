@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 # libgomp1: LightGBM cần OpenMP runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 curl && \
+        libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

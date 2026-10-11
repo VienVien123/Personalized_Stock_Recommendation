@@ -203,7 +203,6 @@ def build_trade_history(con):
            SUM(CASE WHEN x.side = 'BUY' THEN 1 ELSE 0 END)     AS n_buys,
            SUM(CASE WHEN x.side = 'SELL' THEN 1 ELSE 0 END)    AS n_sells,
            SUM(CASE WHEN x.side = 'BUY' THEN x.value ELSE 0 END)  AS buy_value,
-           SUM(CASE WHEN x.side = 'SELL' THEN x.value ELSE 0 END) AS sell_value,
            AVG(x.value)                                        AS avg_trade_value,
            DATE_DIFF('day', MIN(x.d), dd.t)                    AS days_since_first_trade,
            DATE_DIFF('day', MAX(x.d), dd.t)                    AS days_since_last_trade,
@@ -215,7 +214,6 @@ def build_trade_history(con):
            COUNT(DISTINCT CASE WHEN x.d >= dd.t - {RECENT_WINDOW}
                                THEN x.d END)                   AS n_active_days_recent,
            -- khách có thói quen mua theo khuyến nghị PHS không?
-           SUM(CASE WHEN x.side = 'BUY' AND x.in_phs THEN 1 ELSE 0 END) AS n_phs_buys,
            SUM(CASE WHEN x.side = 'BUY' AND x.in_phs THEN 1 ELSE 0 END) * 1.0 /
                NULLIF(SUM(CASE WHEN x.side = 'BUY' THEN 1 ELSE 0 END), 0)
                                                                AS phs_follow_rate
@@ -320,9 +318,7 @@ def build_sector_taste(con):
     WITH a AS (
         SELECT dd.t, x.customer_id, sc.icb_code,
                COUNT(*) AS n_all,
-               SUM(x.value) AS value_all,
                SUM(CASE WHEN x.d >= dd.t - 30 THEN 1 ELSE 0 END) AS n_30d,
-               SUM(CASE WHEN x.d >= dd.t - 30 THEN x.value ELSE 0 END) AS value_30d,
                SUM(CASE WHEN x.d >= dd.t - {RECENT_WINDOW} THEN 1 ELSE 0 END) AS n_90d,
                SUM(CASE WHEN x.d >= dd.t - {RECENT_WINDOW} THEN x.value ELSE 0 END)
                    AS value_90d
@@ -426,7 +422,6 @@ def build_stock_history(con):
            DATE_DIFF('day', MAX(CASE WHEN x.side = 'SELL' THEN x.d END), dd.t)
                AS days_since_sell,
            SUM(CASE WHEN x.side = 'BUY' THEN x.value ELSE 0 END)  AS buy_value,
-           SUM(CASE WHEN x.side = 'SELL' THEN x.value ELSE 0 END) AS sell_value,
            ARG_MAX(x.side, x.d) AS last_side
     FROM decision_dates dd
     JOIN txn x ON x.d < dd.t

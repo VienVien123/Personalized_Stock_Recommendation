@@ -229,8 +229,8 @@ vol_ratio = Volume(t) / AverageVolume20(t)
 turnover  = Volume(t) × Price(t)
 ```
 
-Project cũng tính `fwd_ret`, `idx_fwd_ret` và `excess_fwd` để audit kết quả trong tương
-lai. Các cột tương lai này bị chặn khỏi feature của LightGBM, không được dùng khi dự đoán.
+Project cũng tính `excess_fwd` (mã vượt VNINDEX bao nhiêu trong 20 phiên tới) để chấm điểm
+kết quả. Cột tương lai này không nằm trong feature của LightGBM.
 
 ## 6. Hệ thống học sở thích khách hàng thế nào?
 
@@ -441,7 +441,7 @@ y_buy = 1 nếu khách mua mã đó trong HORIZON phiên sau t
 y_buy = 0 nếu không mua
 ```
 
-Mặc định `HORIZON = 20` phiên. Các cột `market_score`, `candidate_rank`,
+Mặc định `HORIZON = 20` phiên. Các cột `market_score`,
 `market_score_norm`, `target_price` và `cut_loss_price` bị loại khỏi model hành vi để tránh model trộn tín hiệu research với
 sở thích khách. Chúng chỉ được ghép lại sau khi LightGBM dự đoán.
 
@@ -501,8 +501,7 @@ Các biện pháp đang áp dụng:
 1. Feature hành vi chỉ dùng giao dịch có `transaction_date < t`.
 2. Truy vấn Neo4j cũng dùng `r.d < t`.
 3. Không sử dụng `portfolio_value` và `cash_balance` cuối kỳ làm feature quá khứ.
-4. Tay nghề lịch sử chỉ dùng lệnh đã hoàn tất đủ 20 phiên trước `t`.
-5. `fwd_ret`, `excess_fwd` và nhãn tương lai không nằm trong feature model.
+4. `excess_fwd` và nhãn tương lai không nằm trong feature model.
 6. Mốc cuối dữ liệu chưa đủ `HORIZON` có `label_complete = 0` và bị loại khỏi train/test.
 7. Đánh giá theo thời gian, không chia train/test ngẫu nhiên.
 8. Có khoảng đệm `HORIZON` phiên giữa train và test: một dòng train chỉ được dùng khi cửa
@@ -663,11 +662,8 @@ artifacts/               DuckDB/model sinh tự động, không commit
 docker-compose.yml       Neo4j + app + Airflow
 Dockerfile               image chạy Python
 requirements.txt         dependency runtime
-requirements-dev.txt     Ruff (lint + format)
 .env.example             mẫu cấu hình, không chứa mật khẩu thật
 ```
-
-Kiểm tra định dạng code: `ruff check src airflow && ruff format --check src airflow`.
 
 ## 16. Giới hạn và lưu ý sử dụng
 - Model học khả năng phù hợp/hành vi, không bảo đảm cổ phiếu sẽ sinh lời.

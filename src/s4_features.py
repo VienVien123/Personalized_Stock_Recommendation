@@ -111,16 +111,12 @@ def build_stock_at_t(con):
     label_complete = 0 ở các mốc cuối chưa đủ HORIZON phiên để biết nhãn."""
     con.execute(f"""
     CREATE OR REPLACE TABLE stock_at_t AS
-    SELECT s.d AS t, s.dn, s.stock_code, s.c AS price,
+    SELECT s.d AS t, s.dn, s.stock_code,
            s.ret_5, s.ret_20, s.ret_60, s.vol_20, s.up_ratio_20, s.vol_ratio,
-           LN(GREATEST(s.turnover, 1)) AS log_turnover,
-           s.y_stock, s.excess_fwd,
+           LN(GREATEST(s.turnover, 1)) AS log_turnover, s.excess_fwd,
            sc.exchange, sc.icb_code,
-           r.market_score, r.candidate_rank,
-           r.recommendation AS research_recommendation,
-           r.call_type AS research_call_type,
-           r.target_price, r.cut_loss_price,
-           CASE WHEN r.stock_code IS NULL THEN 0 ELSE 1 END AS in_research,
+           r.market_score, r.recommendation AS research_recommendation,
+           r.call_type AS research_call_type, r.target_price, r.cut_loss_price,
            CASE WHEN s.dn + {HORIZON} <= (SELECT MAX(dn) FROM daycal)
                 THEN 1 ELSE 0 END AS label_complete
     FROM sd s
@@ -200,7 +196,7 @@ def build_buy_candidates(con):
                COALESCE(g.buy_value, 0) AS graph_buy_value,
                COALESCE(g.n_sellers, 0) AS n_sellers,
                COALESCE(g.sell_value, 0) AS graph_sell_value,
-               s.market_score, s.candidate_rank, s.label_complete, s.dn,
+               s.market_score, s.label_complete, s.dn,
                s.target_price, s.cut_loss_price
         FROM stock_at_t s
         JOIN prof pr ON pr.open_date < s.t
@@ -323,9 +319,8 @@ def build_train_portfolio(con):
     WITH b AS (
     SELECT p.t, p.dn, p.customer_id, p.stock_code,
            s.ret_5, s.ret_20, s.ret_60, s.vol_20, s.up_ratio_20, s.vol_ratio,
-           s.log_turnover, s.market_score, s.candidate_rank,
-           s.research_recommendation, s.research_call_type,
-           s.in_research, s.label_complete,
+           s.log_turnover, s.market_score,
+           s.research_recommendation, s.research_call_type, s.label_complete,
            -- SELL = vừa chốt lời/cắt lỗ, BUY = mới mở, HOLD = BUY cũ còn mở
            CASE s.research_recommendation WHEN 'SELL' THEN {rs["SELL"]}
                 WHEN 'BUY' THEN {rs["BUY"]} WHEN 'HOLD' THEN {rs["HOLD"]}

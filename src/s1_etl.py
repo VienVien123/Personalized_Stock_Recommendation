@@ -1,15 +1,6 @@
-"""
-Bước 1 — ETL
-Đọc 7 file CSV thô (6 file dữ liệu + nhật ký khuyến nghị PHS) -> làm sạch -> chuẩn hoá đơn vị -> ghi vào DuckDB.
+"""Bước 1 — đọc 6 file CSV, làm sạch, ghi vào DuckDB. Mỗi bảng một hàm (pandas).
 
-Xử lý sẵn 3 cái bẫy của bộ dữ liệu:
-  1. BOM UTF-8 ở đầu 3 file  -> đọc bằng encoding utf-8-sig
-  2. Đơn vị giá khác nhau    -> quy hết về VND (bảng giá x 1000)
-  3. Giá lệnh ngoài biên độ  -> gắn cờ is_outlier, KHÔNG xoá
-
-Dữ liệu ở bước này nhỏ (dưới 1 triệu dòng mỗi bảng) nên xử lý bằng pandas cho dễ
-đọc; mỗi bảng là một hàm. Các bước sau làm việc với bảng hàng chục triệu dòng nên
-vẫn dùng SQL của DuckDB.
+File có BOM UTF-8 -> đọc bằng utf-8-sig; file giá tính nghìn VND -> nhân 1000.
 """
 
 import numpy as np
@@ -37,8 +28,7 @@ def read_csv(name: str, **kwargs) -> pd.DataFrame:
 # ---------------------------------------------------------------- danh mục, giá
 def load_securities() -> pd.DataFrame:
     sec = read_csv("securities_master.csv", dtype=str)
-    columns = ["stock_code", "company_name", "exchange", "instrument_type"]
-    return sec[[*columns, "icb_code", "icb_name"]]
+    return sec[["stock_code", "company_name", "exchange", "icb_code", "icb_name"]]
 
 
 def load_prices() -> pd.DataFrame:
@@ -51,9 +41,6 @@ def load_prices() -> pd.DataFrame:
         {
             "d": raw["date"],
             "stock_code": raw["stock_code"],
-            "o": raw["open"] * 1000,
-            "h": raw["high"] * 1000,
-            "l": raw["low"] * 1000,
             "c": raw["close"] * 1000,
             "v": raw["volume"].astype("int64"),
         }
@@ -74,8 +61,8 @@ def trading_calendar(px: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- khách hàng
-def load_transactions(px: pd.DataFrame) -> pd.DataFrame:
-    """Lệnh mua/bán của khách (giá đã là VND) + cờ giá nằm ngoài biên độ phiên."""
+def load_transactions() -> pd.DataFrame:
+    """Lệnh mua/bán của khách (giá đã là VND)."""
     text = ["transaction_id", "customer_id", "stock_code", "side", "exchange"]
     raw = read_csv(
         "customer_transactions_raw.csv",
@@ -96,16 +83,6 @@ def load_transactions(px: pd.DataFrame) -> pd.DataFrame:
         }
     )
     txn["value"] = txn["qty"] * txn["price"]
-
-    # cờ bất thường: giá lệnh nằm ngoài khoảng thấp nhất - cao nhất của phiên
-    day = txn[["stock_code", "d"]].merge(
-        px[["stock_code", "d", "h", "l"]], on=["stock_code", "d"], how="left"
-    )
-    outside = (txn["price"].to_numpy() > day["h"].to_numpy()) | (
-        txn["price"].to_numpy() < day["l"].to_numpy()
-    )
-    txn["is_outlier"] = pd.array(outside, dtype="boolean")
-    txn.loc[day["h"].isna().to_numpy(), "is_outlier"] = pd.NA  # không có giá phiên
     return txn
 
 
@@ -137,7 +114,6 @@ def pair_phs_calls() -> pd.DataFrame:
     Giá trong file tính theo nghìn VND.
     """
     raw = read_csv("candidate_stocks_phs_skill.csv", dtype=str)
-    pnl = raw["realizedProfitLoss"].str.strip().replace("", np.nan).str.replace("%", "")
     ev = pd.DataFrame(
         {
             "stock_code": raw["symbol"].str.strip().str.upper(),
@@ -148,7 +124,6 @@ def pair_phs_calls() -> pd.DataFrame:
             "price": raw["recommendationPrice"].map(mid_price) * 1000,
             "target_price": raw["targetPrice"].astype(float) * 1000,
             "cut_loss_price": raw["cutLossPrice"].astype(float) * 1000,
-            "realized_pnl_pct": pnl.astype(float),
         }
     )
 
@@ -160,14 +135,14 @@ def pair_phs_calls() -> pd.DataFrame:
     opens = numbered(ev[ev["call_type"] == "BUY"])
     closes = numbered(ev[ev["call_type"].isin(["TAKE_PROFIT", "CUT_LOSS"])])
     calls = opens.merge(
-        closes[["stock_code", "k", "d", "call_type", "realized_pnl_pct"]],
+        closes[["stock_code", "k", "d", "call_type"]],
         on=["stock_code", "k"],
         how="left",
         suffixes=("", "_close"),
     )
     # lệnh đóng phải đến sau lệnh mở, nếu không coi như chưa đóng
     bad = calls["d_close"] < calls["d"]
-    calls.loc[bad, ["d_close", "call_type_close", "realized_pnl_pct_close"]] = np.nan
+    calls.loc[bad, ["d_close", "call_type_close"]] = np.nan
 
     return pd.DataFrame(
         {
@@ -178,7 +153,6 @@ def pair_phs_calls() -> pd.DataFrame:
             "entry_price": calls["price"],
             "target_price": calls["target_price"],
             "cut_loss_price": calls["cut_loss_price"],
-            "realized_pnl_pct": calls["realized_pnl_pct_close"],
         }
     )
 
@@ -200,15 +174,10 @@ def research_signals(dates, calls, px) -> pd.DataFrame:
     # MarketScore = dư địa tăng (%) từ giá đóng cửa ngày t tới giá mục tiêu
     price_now = buy["c"].fillna(buy["entry_price"]).replace(0, np.nan)
     buy["market_score"] = 100.0 * (buy["target_price"] / price_now - 1)
-    buy["candidate_rank"] = buy.groupby("t")["market_score"].rank(
-        method="min", ascending=False
-    )
-    buy = buy.assign(recommendation="BUY", call_type="BUY", call_date=buy["open_d"])
+    buy = buy.assign(recommendation="BUY", call_type="BUY")
 
     sell = t.merge(calls, left_on="t", right_on="close_d").drop_duplicates(key)
-    sell = sell.assign(
-        recommendation="SELL", call_type=sell["close_type"], call_date=sell["close_d"]
-    )
+    sell = sell.assign(recommendation="SELL", call_type=sell["close_type"])
 
     hold = t.merge(calls, how="cross")
     still_open = (hold["open_d"] < hold["t"]) & (
@@ -216,20 +185,11 @@ def research_signals(dates, calls, px) -> pd.DataFrame:
     )
     hold = hold[still_open].sort_values("open_d", ascending=False)
     hold = without(without(hold, buy, key), sell, key).drop_duplicates(key)
-    hold = hold.assign(
-        recommendation="HOLD", call_type="HOLD", call_date=hold["open_d"]
-    )
+    hold = hold.assign(recommendation="HOLD", call_type="HOLD")
 
     out = pd.concat([buy, without(sell, buy, key), hold], ignore_index=True)
-    columns = ["d", "stock_code", "market_score", "recommendation", "candidate_rank"]
-    columns += [
-        "call_type",
-        "call_date",
-        "entry_price",
-        "target_price",
-        "cut_loss_price",
-    ]
-    return out.rename(columns={"t": "d"})[columns]
+    columns = ["d", "stock_code", "market_score", "recommendation", "call_type"]
+    return out.rename(columns={"t": "d"})[[*columns, "target_price", "cut_loss_price"]]
 
 
 def without(df, other, key):
@@ -252,10 +212,8 @@ def window_end(key: np.ndarray, ahead: int) -> np.ndarray:
 
 
 def price_features(px, idx, daycal) -> pd.DataFrame:
-    """Đặc trưng giá theo phiên + kết quả lợi suất tương lai để audit.
-
-    y_stock/excess_fwd KHÔNG đi vào model hành vi. Chúng chỉ được dùng để đo kết quả
-    và tính tay nghề lịch sử khi cửa sổ 20 phiên đã hoàn tất trước t.
+    """Đặc trưng giá theo phiên + excess_fwd (mã vượt VNINDEX bao nhiêu trong HORIZON
+    phiên tới — chỉ để chấm điểm ở S5, không đưa vào model).
     Cửa sổ tính theo số phiên thị trường (dn), không theo số dòng, nên không bị lệch
     khi một mã nghỉ giao dịch.
     """
@@ -305,8 +263,6 @@ def price_features(px, idx, daycal) -> pd.DataFrame:
         n_sessions_20=n,
     ).merge(vni, on="dn")
 
-    stock_growth = df["c_fwd"] / df["c"]
-    index_growth = df["idx_c_fwd"] / df["idx_c"]
     return pd.DataFrame(
         {
             "stock_code": df["stock_code"],
@@ -322,11 +278,7 @@ def price_features(px, idx, daycal) -> pd.DataFrame:
             "n_sessions_20": df["n_sessions_20"],
             "vol_ratio": df["v"] / df["v_avg20"].replace(0, np.nan),
             "turnover": df["v"] * df["c"],
-            "fwd_ret": stock_growth - 1,
-            "idx_fwd_ret": index_growth - 1,
-            "excess_fwd": stock_growth - index_growth,
-            # kết quả audit: mã này có thắng VNINDEX trong HORIZON phiên tới không?
-            "y_stock": (stock_growth > index_growth).astype("int32"),
+            "excess_fwd": df["c_fwd"] / df["c"] - df["idx_c_fwd"] / df["idx_c"],
         }
     )
 
@@ -339,7 +291,7 @@ def main():
     idx = load_index()
     daycal = trading_calendar(px)
     dates = daycal.rename(columns={"d": "t"})  # mỗi phiên là một mốc t
-    txn = load_transactions(px)
+    txn = load_transactions()
     prof = load_profiles()
     calls = pair_phs_calls()
     research = research_signals(dates, calls, px)
@@ -350,13 +302,12 @@ def main():
     tables = {
         "sec": (sec, None),
         "px": (px, None),
-        "idx": (idx, None),
         "daycal": (daycal, None),
         "txn": (txn, {"ts": "TIME"}),
         "prof": (prof, None),
         "decision_dates": (dates, None),
         "phs_calls": (calls, None),
-        "research": (research, {"candidate_rank": "INTEGER"}),
+        "research": (research, None),
         "sd": (sd, None),
     }
     con = connect()

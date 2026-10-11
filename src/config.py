@@ -33,7 +33,7 @@ COOC_WINDOW = 180  # mỗi lát cắt nhìn bấy nhiêu ngày giao dịch trư�
 COOC_TOPN = 25  # số mã đồng mua mạnh nhất giữ lại cho mỗi mã
 PEER_TOPK = 20  # số khách tương tự giữ lại cho mỗi khách
 PEER_MIN_SHARED = 2  # số mã mua chung tối thiểu để hai khách được coi là giống
-GRAPH_WORKERS = 4  # số lát cắt gửi tới Neo4j cùng lúc
+GRAPH_WORKERS = 2  # số lát cắt gửi tới Neo4j cùng lúc
 
 # ---------- Trọng số đặt tay của các điểm thành phần (chỉ là ĐẶC TRƯNG cho model) ----------
 GRAPH_SCORE_WEIGHTS = {"cooc": 0.75, "buyer_pop": 0.25}

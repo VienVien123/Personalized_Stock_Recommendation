@@ -46,17 +46,14 @@ BASE_IDS += ["label_complete", "q", "g"]
 # Cột của PHS bị loại khỏi model hành vi (chỉ dùng khi ghép điểm cuối).
 BUY_RESEARCH_COLS = [
     "market_score",
-    "candidate_rank",
     "market_score_norm",
     "target_price",
     "cut_loss_price",
 ]
 PORTFOLIO_RESEARCH_COLS = [
     "market_score",
-    "candidate_rank",
     "research_recommendation",
     "research_call_type",
-    "in_research",
     "research_sell_signal",
 ]
 
