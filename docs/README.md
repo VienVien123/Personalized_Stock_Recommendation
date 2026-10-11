@@ -8,6 +8,8 @@
 | S4 | [src/s4_features.py](../src/s4_features.py) | [s4_features.md](s4_features.md) | Ghép mọi thứ thành 2 bảng học: MUA và DANH MỤC |
 | S5 | [src/s5_train.py](../src/s5_train.py) | [s5_train.md](s5_train.md) | Huấn luyện 2 model, đánh giá, lưu kết quả |
 
+Những gì thay đổi qua từng đợt: [CHANGELOG.md](CHANGELOG.md).
+
 ## Bài toán
 
 PHS ra khuyến nghị "mua mã A", "chốt lời mã B", "cắt lỗ mã C". Hệ thống trả lời:
