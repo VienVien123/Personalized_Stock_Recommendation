@@ -1,6 +1,6 @@
 """
 Bước 2 — Trạng thái khách hàng POINT-IN-TIME
-Tại mỗi mốc quyết định t (phiên cuối tuần hoặc cuối tháng), tính lại "khách này
+Tại mỗi mốc quyết định t (mỗi phiên giao dịch), tính lại "khách này
 đang như thế nào" CHỈ bằng dữ liệu có trước hoặc bằng t.
 
 Vị thế đang nắm được DỰNG LẠI từ giao dịch (không phụ thuộc file snapshot cuối
@@ -272,7 +272,6 @@ def build_horizon(con):
                COUNT_IF(is_short)  AS n_short,
                COUNT_IF(is_long)   AS n_long,
                COUNT_IF(is_mid)    AS n_mid,
-               COUNT_IF(closed)    AS n_closed,
                MEDIAN(held_days) FILTER (WHERE closed)          AS median_hold_days,
                AVG(CASE WHEN realized_ret > 0 THEN 1.0 ELSE 0.0 END)
                    FILTER (WHERE closed)                         AS win_rate,

@@ -32,12 +32,12 @@ S2–S5 viết bằng SQL đọc được).
 | Bảng | Một dòng là | Ghi chú |
 |---|---|---|
 | `sec` | một mã | sàn, ngành ICB (`icb_code` giữ dạng chuỗi) |
-| `px` | (mã, ngày) | giá đóng cửa × 1000, khối lượng; bỏ dòng giá ≤ 0 |
+| `px` | (mã, ngày) | giá đóng cửa × 1000; bỏ dòng giá ≤ 0 (khối lượng chỉ dùng để tính `sd`) |
 | `daycal` | một phiên | số thứ tự phiên `dn` = 1, 2, 3… |
 | `decision_dates` | một mốc `t` | = mọi phiên |
 | `prof` | một khách | loại khách, ngày mở tài khoản |
 | `txn` | một lệnh | `value = qty × price` |
-| `phs_calls` | một khuyến nghị PHS | ngày mở, ngày đóng, giá vào, giá mục tiêu, giá cắt lỗ |
+| `phs_calls` | một khuyến nghị PHS | mã, ngày mở, ngày đóng (giá mục tiêu / cắt lỗ nằm ở `research`) |
 | `research` | (ngày, mã) | tín hiệu BUY / SELL / HOLD tại ngày đó |
 | `sd` | (mã, phiên) | đặc trưng giá + kết quả 20 phiên tới |
 

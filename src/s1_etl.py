@@ -63,7 +63,7 @@ def trading_calendar(px: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------- khách hàng
 def load_transactions() -> pd.DataFrame:
     """Lệnh mua/bán của khách (giá đã là VND)."""
-    text = ["transaction_id", "customer_id", "stock_code", "side", "exchange"]
+    text = ["transaction_id", "customer_id", "stock_code", "side"]
     raw = read_csv(
         "customer_transactions_raw.csv",
         dtype=dict.fromkeys([*text, "execution_time"], str),
@@ -79,7 +79,6 @@ def load_transactions() -> pd.DataFrame:
             "price": raw["price"].astype(float),
             "d": raw["trade_date"],
             "ts": raw["execution_time"],
-            "exchange": raw["exchange"],
         }
     )
     txn["value"] = txn["qty"] * txn["price"]
@@ -268,8 +267,6 @@ def price_features(px, idx, daycal) -> pd.DataFrame:
             "stock_code": df["stock_code"],
             "d": df["d"],
             "dn": df["dn"],
-            "c": df["c"],
-            "v": df["v"],
             "ret_5": df["c"] / df["c_5a"] - 1,
             "ret_20": df["c"] / df["c_20a"] - 1,
             "ret_60": df["c"] / df["c_60a"] - 1,
@@ -301,19 +298,18 @@ def main():
 
     tables = {
         "sec": (sec, None),
-        "px": (px, None),
+        "px": (px[["d", "stock_code", "c"]], None),  # S2 chỉ cần giá đóng cửa
         "daycal": (daycal, None),
         "txn": (txn, {"ts": "TIME"}),
         "prof": (prof, None),
         "decision_dates": (dates, None),
-        "phs_calls": (calls, None),
+        "phs_calls": (calls[["stock_code", "open_d", "close_d"]], None),
         "research": (research, None),
         "sd": (sd, None),
     }
     con = connect()
     for name, (df, casts) in tables.items():
         write_table(con, name, df, casts)
-    con.execute("CREATE INDEX IF NOT EXISTS sd_idx ON sd(stock_code, dn);")
     con.close()
     log("s1", "xong.")
 

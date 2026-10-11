@@ -1,6 +1,13 @@
 # Nhật ký thay đổi
 
-## 2026-10-12 — gộp task ghi dấu hoàn tất vào `bat_app`
+## 2026-10-12 — bỏ cột không nơi nào đọc; gộp task ghi dấu hoàn tất vào `bat_app`
+
+- S1 thôi ghi các cột không bước nào đọc: `txn.exchange`, `px.v`, `sd.c`, `sd.v`, và 4 cột
+  giá / loại lệnh đóng của `phs_calls`. Bỏ luôn index `sd_idx` (không truy vấn nào dùng).
+- S2 bỏ cột `cust_horizon.n_closed` (tính ra nhưng không dùng).
+- Đã kiểm chứng bằng một lần chạy lại toàn bộ DAG: mọi bảng giữ nguyên số dòng và giá trị,
+  `train_buy` / `train_portfolio` khớp, `summary.json` giống hệt. Riêng `port_value` và
+  `preferred_log_turnover` lệch ở chữ số cuối (sai số ~1e-16, do DuckDB cộng song song).
 
 - DAG bớt task `ghi_dau_hoan_tat`: `bat_app` tự ghi `artifacts/_pipeline_done` rồi mới bật
   app. Chuỗi task còn `dung_app → s1 … s5 → bat_app`.
