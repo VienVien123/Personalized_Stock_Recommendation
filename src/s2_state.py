@@ -27,6 +27,7 @@ from config import (
     connect,
     create_by_date_chunks,
     log,
+    write_table,
 )
 
 
@@ -67,52 +68,55 @@ def position_states(txn: pd.DataFrame, buy_fee: float = BUY_FEE) -> pd.DataFrame
     return out.groupby(["customer_id", "stock_code", "d"], sort=False).tail(1)
 
 
-def main():
-    con = connect()
+def hold_episodes(txn: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Tách các vòng nắm giữ: mua lúc đang không có mã -> bán hết.
 
-    # ---------- 0. Vòng nắm giữ: mua lần đầu -> bán hết ----------
-    # Một vòng bắt đầu khi khách MUA lúc đang không nắm mã đó và kết thúc khi số
-    # lượng về 0. Bảng chỉ chứa NGÀY của các sự kiện, nên mọi mốc t phía sau tự
-    # lọc được phần đã biết tại t (open_d < t, close_d < t...) mà không rò rỉ.
-    log("s2", "tách các vòng mua -> bán hết của từng khách x mã...")
-    con.execute("""
-    CREATE OR REPLACE TABLE hold_episode AS
-    WITH o AS (
-        SELECT customer_id, stock_code, d, ts, transaction_id, side, qty, value,
-               SUM(CASE WHEN side = 'BUY' THEN qty ELSE -qty END) OVER w AS pos_after
-        FROM txn
-        WINDOW w AS (PARTITION BY customer_id, stock_code
-                     ORDER BY d, ts, transaction_id)
-    ),
-    e AS (
-        SELECT *,
-               SUM(CASE WHEN side = 'BUY'
-                         AND pos_after - qty <= 0 THEN 1 ELSE 0 END) OVER w AS ep
-        FROM o
-        WINDOW w AS (PARTITION BY customer_id, stock_code
-                     ORDER BY d, ts, transaction_id)
+    `txn` phải được sắp theo (customer_id, stock_code, thời gian). Trả về bảng vòng
+    nắm giữ và số lệnh làm số dư âm (bán một vị thế có từ trước kỳ dữ liệu — khi đó
+    vòng nắm giữ của khách đó có thể bị tách sai).
+    """
+    pair = [txn["customer_id"], txn["stock_code"]]
+    is_buy = txn["side"] == "BUY"
+    # số lượng đang giữ SAU mỗi lệnh (cộng dồn, không chặn ở 0)
+    pos_after = txn["qty"].where(is_buy, -txn["qty"]).groupby(pair).cumsum()
+    # lệnh MUA khi đang không giữ gì -> mở vòng mới; ep = số thứ tự vòng (0 = trước vòng đầu)
+    opens = is_buy & (pos_after - txn["qty"] <= 0)
+    ep = opens.astype("int64").groupby(pair).cumsum()
+
+    e = txn.assign(
+        ep=ep,
+        close_d=txn["d"].where(pos_after <= 0),
+        sell_d=txn["d"].where(~is_buy),
+        buy_value=txn["value"].where(is_buy, 0.0),
+        sell_value=txn["value"].where(~is_buy, 0.0),
     )
-    SELECT customer_id, stock_code, ep,
-           MIN(d) AS open_d,
-           MAX(CASE WHEN pos_after <= 0 THEN d END) AS close_d,
-           MIN(CASE WHEN side = 'SELL' THEN d END)  AS first_sell_d,
-           SUM(CASE WHEN side = 'BUY'  THEN value ELSE 0 END) AS buy_value,
-           SUM(CASE WHEN side = 'SELL' THEN value ELSE 0 END) AS sell_value
-    FROM e
-    WHERE ep > 0          -- bỏ lệnh bán của vị thế có từ trước khi dữ liệu bắt đầu
-    GROUP BY 1, 2, 3;
-    """)
+    # ep = 0: lệnh bán của vị thế có từ trước khi dữ liệu bắt đầu -> bỏ
+    episodes = (
+        e[e["ep"] > 0]
+        .groupby(["customer_id", "stock_code", "ep"], sort=False)
+        .agg(
+            open_d=("d", "min"),
+            close_d=("close_d", "max"),
+            first_sell_d=("sell_d", "min"),
+            buy_value=("buy_value", "sum"),
+            sell_value=("sell_value", "sum"),
+        )
+        .reset_index()
+    )
+    return episodes, int((pos_after < 0).sum())
 
-    # hold_episode cộng dồn số lượng mà không chặn ở 0. Nếu dữ liệu có lệnh bán một
-    # vị thế có từ trước kỳ dữ liệu, số dư âm sẽ làm các vòng nắm giữ bị tách sai.
-    n_negative = con.execute("""
-        SELECT COUNT(*) FROM (
-            SELECT SUM(CASE WHEN side = 'BUY' THEN qty ELSE -qty END) OVER (
-                       PARTITION BY customer_id, stock_code
-                       ORDER BY d, ts, transaction_id) AS pos_after
-            FROM txn)
-        WHERE pos_after < 0
-    """).fetchone()[0]
+
+# ---------------------------------------------------------------- vị thế
+def build_hold_episodes(con, txn):
+    """hold_episode — các vòng nắm giữ: mua lần đầu -> bán hết.
+
+    Một vòng bắt đầu khi khách MUA lúc đang không nắm mã đó và kết thúc khi số
+    lượng về 0. Bảng chỉ chứa NGÀY của các sự kiện, nên mọi mốc t phía sau tự
+    lọc được phần đã biết tại t (open_d < t, close_d < t...) mà không rò rỉ.
+    """
+    log("s2", "tách các vòng mua -> bán hết của từng khách x mã...")
+    episodes, n_negative = hold_episodes(txn)
+    write_table(con, "hold_episode", episodes)
     if n_negative:
         log(
             "s2",
@@ -120,15 +124,16 @@ def main():
             "dữ liệu?) — vòng nắm giữ và kỳ hạn đầu tư của các khách này có thể sai.",
         )
 
-    # ---------- 1. Vị thế đang nắm tại t ----------
-    # Dựng lại từ giao dịch: trạng thái cuối mỗi ngày có lệnh, có hiệu lực tới
-    # ngày có lệnh kế tiếp. Giá trị thị trường lấy giá đóng cửa gần nhất <= t.
+
+def build_positions(con, txn):
+    """pos_state, pos — vị thế đang nắm tại từng mốc t.
+
+    Dựng lại từ giao dịch: trạng thái cuối mỗi ngày có lệnh, có hiệu lực tới
+    ngày có lệnh kế tiếp. Giá trị thị trường lấy giá đóng cửa gần nhất <= t.
+    Sau đó đối chiếu với snapshot cuối tháng của file gốc.
+    """
     log("s2", "dựng lại vị thế từ giao dịch tại mỗi mốc...")
-    states = position_states(
-        con.execute("""
-        SELECT customer_id, stock_code, d, side, qty, price FROM txn
-        ORDER BY customer_id, stock_code, d, ts, transaction_id""").df()
-    )
+    states = position_states(txn)
     con.register("_pos_state_df", states)
     con.execute("""
     CREATE OR REPLACE TABLE pos_state AS
@@ -196,7 +201,9 @@ def main():
                 "BUY_FEE và dữ liệu giao dịch.",
             )
 
-    # ---------- 2. Giá trị danh mục tại t (point-in-time) ----------
+
+def build_portfolio_summary(con):
+    """port_pit — số mã, tổng giá trị, lãi/lỗ TB, độ tập trung danh mục tại t."""
     con.execute("""
     CREATE OR REPLACE TABLE port_pit AS
     SELECT t, customer_id,
@@ -209,7 +216,11 @@ def main():
     GROUP BY 1, 2;
     """)
 
-    # ---------- 3. Lịch sử giao dịch tích luỹ tới t ----------
+
+# ---------------------------------------------------------------- thói quen khách
+def build_trade_history(con):
+    """cust_pit — thói quen giao dịch tích luỹ tới t (số lệnh, nhịp gần đây, có hay
+    mua theo PHS không); cust_phs_quality — những lần mua theo PHS hiệu quả ra sao."""
     log("s2", "lịch sử giao dịch tích luỹ tới mỗi mốc...")
     # Gắn cờ lệnh mua rơi vào lúc PHS đang mở khuyến nghị cho đúng mã đó.
     con.execute("""
@@ -251,11 +262,11 @@ def main():
     GROUP BY 1, 2;
     """,
     )
-    # ---------- 3a. Ch?t l??ng mua theo PHS ----------
-    # `phs_follow_rate` ? tr?n ch? tr? l?i "kh?ch c? hay mua theo PHS kh?ng?". B?ng n?y
-    # tr? l?i th?m "nh?ng l?n mua theo PHS ?? ?? HORIZON tr??c t th? k?t qu? ra sao?".
-    # ?i?u ki?n s.dn + HORIZON <= dd.dn ch?n r? r?: t?i t ch? d?ng c?c l?nh ?? bi?t
-    # k?t qu? 20 phi?n.
+    # ---------- 3a. Chất lượng mua theo PHS ----------
+    # `phs_follow_rate` ở trên chỉ trả lời "khách có hay mua theo PHS không?". Bảng này
+    # trả lời thêm "những lần mua theo PHS đã đủ HORIZON trước t thì kết quả ra sao?".
+    # Điều kiện s.dn + HORIZON <= dd.dn chặn rò rỉ: tại t chỉ dùng các lệnh đã biết
+    # kết quả 20 phiên.
     create_by_date_chunks(
         con,
         f"""
@@ -278,14 +289,17 @@ def main():
     )
     con.execute("DROP TABLE IF EXISTS _txn_phs;")
 
-    # ---------- 3b. Kỳ hạn đầu tư suy ra từ thời gian nắm giữ ----------
-    # Mỗi vòng nắm giữ đã bắt đầu trước t là một bằng chứng:
-    #   bán hết trong <= SHORT_HOLD_DAYS (1 tháng)            -> NGẮN HẠN
-    #   giữ > LONG_HOLD_DAYS (3 tháng) rồi mới bán hết, HOẶC vẫn
-    #   đang giữ > LONG_HOLD_DAYS và chưa bán bớt lần nào     -> DÀI HẠN
-    #   còn lại (giữ 1-3 tháng, hoặc vị thế còn quá mới)      -> chưa kết luận
-    # Mẫu số là TẤT CẢ bằng chứng, nên vòng "chưa kết luận" kéo cả hai tỷ lệ xuống.
-    #
+
+def build_horizon(con):
+    """cust_horizon — kỳ hạn đầu tư và thói quen chốt lời / cắt lỗ của khách.
+
+    Mỗi vòng nắm giữ đã bắt đầu trước t là một bằng chứng:
+      bán hết trong <= SHORT_HOLD_DAYS (1 tháng)            -> NGẮN HẠN
+      giữ > LONG_HOLD_DAYS (3 tháng) rồi mới bán hết, HOẶC vẫn
+      đang giữ > LONG_HOLD_DAYS và chưa bán bớt lần nào     -> DÀI HẠN
+      còn lại (giữ 1-3 tháng, hoặc vị thế còn quá mới)      -> chưa kết luận
+    Mẫu số là TẤT CẢ bằng chứng, nên vòng "chưa kết luận" kéo cả hai tỷ lệ xuống.
+    """
     # Tầng 1 (rõ ràng): tỷ lệ ngắn hạn / dài hạn đạt ngưỡng -> SHORT / LONG.
     # Tầng 2 (thiên về): phần lớn khách còn lại có rất nhiều bằng chứng nhưng pha
     #   trộn. Họ được xếp theo nhóm bằng chứng LỚN NHẤT trong ba nhóm đã kết luận
@@ -355,9 +369,10 @@ def main():
     """,
     )
 
-    # ---------- 4. "Tay nghề" khách trong quá khứ ----------
-    # Tỷ lệ lệnh MUA trước đây mà 20 phiên sau mã đó thắng VNINDEX.
-    # Chỉ tính các lệnh đã ĐỦ 20 phiên TRƯỚC t, nếu không sẽ rò rỉ tương lai.
+
+def build_skill(con):
+    """cust_skill — "tay nghề": tỷ lệ lệnh MUA trước đây mà 20 phiên sau mã đó thắng
+    VNINDEX. Chỉ tính các lệnh đã ĐỦ 20 phiên TRƯỚC t, nếu không sẽ rò rỉ tương lai."""
     log("s2", "tỷ lệ chọn đúng mã trong quá khứ (đã chặn rò rỉ)...")
     create_by_date_chunks(
         con,
@@ -374,24 +389,13 @@ def main():
     """,
     )
 
-    # ---------- 5. Khẩu vị ngành tới t ----------
-    log("s2", "khẩu vị ngành ICB tới mỗi mốc...")
-    create_by_date_chunks(
-        con,
-        """
-    CREATE OR REPLACE TABLE cust_sector AS
-    SELECT dd.t, x.customer_id, sc.icb_code,
-           COUNT(*) AS n_icb,
-           COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (PARTITION BY dd.t, x.customer_id) AS icb_share
-    FROM decision_dates dd
-    JOIN txn x  ON x.d < dd.t AND x.side = 'BUY'
-    JOIN sec sc ON sc.stock_code = x.stock_code
-    GROUP BY 1, 2, 3;
-    """,
-    )
 
-    # Kh?u v? ng?nh ??ng: ng?nh kh?ch mua g?n ??y c? ?ang l?ch kh?i kh?u v?
-    # to?n l?ch s? kh?ng. C?c paper sequence/multi-view th??ng nh?n m?nh t?n hi?u n?y.
+# ---------------------------------------------------------------- khẩu vị khách
+def build_sector_taste(con):
+    """cust_sector_recent — tỷ trọng từng ngành trong các lệnh MUA: toàn lịch sử, 30 và
+    RECENT_WINDOW ngày gần nhất. Độ lệch giữa gần đây và toàn lịch sử cho biết khẩu
+    vị đang dịch chuyển."""
+    log("s2", "khẩu vị ngành ICB tới mỗi mốc...")
     create_by_date_chunks(
         con,
         f"""
@@ -409,30 +413,28 @@ def main():
         JOIN txn x  ON x.d < dd.t AND x.side = 'BUY'
         JOIN sec sc ON sc.stock_code = x.stock_code
         GROUP BY 1, 2, 3
+    ),
+    s AS (
+        SELECT *,
+               n_all * 1.0 / NULLIF(SUM(n_all) OVER w, 0)         AS icb_share_all,
+               n_30d * 1.0 / NULLIF(SUM(n_30d) OVER w, 0)         AS icb_share_30d,
+               n_90d * 1.0 / NULLIF(SUM(n_90d) OVER w, 0)         AS icb_share_90d,
+               value_90d * 1.0 / NULLIF(SUM(value_90d) OVER w, 0) AS icb_value_share_90d
+        FROM a
+        WINDOW w AS (PARTITION BY t, customer_id)
     )
     SELECT *,
-           n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
-               AS icb_share_all,
-           n_30d * 1.0 / NULLIF(SUM(n_30d) OVER (PARTITION BY t, customer_id), 0)
-               AS icb_share_30d,
-           n_90d * 1.0 / NULLIF(SUM(n_90d) OVER (PARTITION BY t, customer_id), 0)
-               AS icb_share_90d,
-           value_90d * 1.0 / NULLIF(SUM(value_90d) OVER (PARTITION BY t, customer_id), 0)
-               AS icb_value_share_90d,
-           COALESCE(
-               n_30d * 1.0 / NULLIF(SUM(n_30d) OVER (PARTITION BY t, customer_id), 0), 0
-           ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
-               AS icb_recent_shift_30d,
-           COALESCE(
-               n_90d * 1.0 / NULLIF(SUM(n_90d) OVER (PARTITION BY t, customer_id), 0), 0
-           ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
-               AS icb_recent_shift_90d
-    FROM a;
+           COALESCE(icb_share_30d, 0) - icb_share_all AS icb_recent_shift_30d,
+           COALESCE(icb_share_90d, 0) - icb_share_all AS icb_recent_shift_90d
+    FROM s;
     """,
     )
 
-    # Chu?i mua g?n nh?t: m?/ng?nh ?ang x?t c? n?m trong 1/3/5 l?nh BUY g?n nh?t
-    # c?a kh?ch kh?ng. T?ch stock v? sector ?? S4 gh?p v?i c? r? PHS v? danh m?c.
+
+def build_recent_buys(con):
+    """cust_recent_stock_seq, cust_recent_sector_seq — chuỗi mua gần nhất: mã / ngành
+    đang xét có nằm trong 1/3/5 lệnh BUY gần nhất của khách không. Tách stock và
+    sector để S4 ghép với cả rổ PHS và danh mục."""
     create_by_date_chunks(
         con,
         """
@@ -481,9 +483,12 @@ def main():
     """,
     )
 
-    # ---------- 6. Phong cách đầu tư lịch sử ----------
-    # Học từ trạng thái thị trường NGAY TRƯỚC các lệnh BUY cũ. Trọng số giảm một
-    # nửa sau BEHAVIOR_HALF_LIFE ngày, giống ý tưởng style profile trong notebook.
+
+def build_style(con):
+    """cust_style — phong cách đầu tư: khách thích mã đang tăng hay giảm, biến động
+    mạnh hay yếu, thanh khoản cao hay thấp. Học từ trạng thái thị trường NGAY TRƯỚC
+    các lệnh BUY cũ; lệnh càng lớn càng nặng ký, và trọng số giảm một nửa sau mỗi
+    BEHAVIOR_HALF_LIFE ngày."""
     log("s2", "phong cách biến động/đà giá/thanh khoản của khách...")
     create_by_date_chunks(
         con,
@@ -509,7 +514,10 @@ def main():
     """,
     )
 
-    # ---------- 7. Quan hệ khách x mã tới t ----------
+
+def build_stock_history(con):
+    """cust_stock_pit — lịch sử của từng cặp khách x mã tới t: đã mua/bán mấy lần,
+    lần cuối cách đây bao lâu, lệnh cuối là MUA hay BÁN."""
     log("s2", "lịch sử khách x mã tới mỗi mốc...")
     create_by_date_chunks(
         con,
@@ -533,6 +541,9 @@ def main():
     """,
     )
 
+
+def report(con):
+    """In số dòng mỗi bảng và phân bố kỳ hạn tại mốc mới nhất để kiểm tra nhanh."""
     for t in [
         "hold_episode",
         "pos_state",
@@ -542,7 +553,6 @@ def main():
         "cust_phs_quality",
         "cust_horizon",
         "cust_skill",
-        "cust_sector",
         "cust_sector_recent",
         "cust_recent_stock_seq",
         "cust_recent_sector_seq",
@@ -557,6 +567,28 @@ def main():
         WHERE t = (SELECT MAX(t) FROM cust_horizon) GROUP BY 1 ORDER BY 1
     """).fetchall()
     log("s2", "  kỳ hạn tại mốc cuối: " + " | ".join(f"{k} {n:,}" for k, n in dist))
+
+
+def main():
+    con = connect()
+    # mọi lệnh, sắp theo khách x mã x thời gian — dùng cho hai bước đầu
+    txn = con.execute("""
+        SELECT customer_id, stock_code, d, side, qty, price, value FROM txn
+        ORDER BY customer_id, stock_code, d, ts, transaction_id""").df()
+    build_hold_episodes(con, txn)
+    build_positions(con, txn)
+    del txn
+
+    build_portfolio_summary(con)
+    build_trade_history(con)
+    build_horizon(con)
+    build_skill(con)
+    build_sector_taste(con)
+    build_recent_buys(con)
+    build_style(con)
+    build_stock_history(con)
+
+    report(con)
     con.close()
     log("s2", "xong.")
 

@@ -620,7 +620,7 @@ bảo lợi nhuận.
 | S5 | `src/s5_train.py` | Huấn luyện LightGBM và đánh giá walk-forward |
 | App | `src/app.py` | Ghép điểm, hiển thị khuyến nghị bằng Gradio |
 | Orchestrator | `src/pipeline.py` | Kiểm tra đầu vào rồi chạy tuần tự S1 → S5 |
-| Cấu hình | `src/config.py` | Tham số từ `.env` và các trọng số đặt tay |
+| Cấu hình | `src/config.py` | Tham số bài toán, trọng số đặt tay; đường dẫn và Neo4j đọc từ `.env` |
 
 
 
@@ -690,7 +690,10 @@ Cả hai đều dừng app, chạy S1 → S5, bật lại app rồi kiểm tra k
 
 ## 14. Tham số cấu hình
 
-| Biến | Mặc định | Ý nghĩa |
+Các tham số dưới đây là hằng số cố định trong `src/config.py` (trừ hai biến Airflow nằm
+trong `.env`). Muốn đổi thì sửa trực tiếp file đó.
+
+| Tham số | Giá trị | Ý nghĩa |
 |---|---:|---|
 | `DECISION_FREQ` | day | Nhịp ra quyết định: `day`, `week` hoặc `month` |
 | `HORIZON` | 20 | Số phiên tương lai dùng để tạo nhãn hành vi |
@@ -716,7 +719,7 @@ Cả hai đều dừng app, chạy S1 → S5, bật lại app rồi kiểm tra k
 
 Thay đổi feature, `HORIZON`, candidate hoặc trọng số cần chạy lại pipeline để kết quả
 đánh giá và model được đồng bộ. Riêng `DECISION_FREQ` nằm trong mã phiên bản của pipeline,
-nên đổi nhịp là pipeline tự chạy lại ở lần khởi động kế tiếp.
+nên đổi nhịp thì app chờ cho tới khi pipeline được chạy lại.
 
 ## 15. Cấu trúc repository
 
@@ -761,19 +764,17 @@ chọn ngẫu nhiên; rồi gọi hàm gợi ý của app cho 20 khách thật v
 (mã MUA có đúng là khuyến nghị PHS còn mở, danh mục có đúng các mã khách đang nắm). Kết
 quả ghi vào `artifacts/verify_report.json`; lệnh thoát mã 1 nếu có kiểm tra không qua.
 
-### Airflow: kiểm tra tự động và chạy pipeline
+### Airflow: chạy pipeline
 
 Dự án không dùng CI trên GitHub. `docker compose up -d` khởi động thêm Airflow tại
-<http://localhost:8080>, với hai DAG trong `airflow/dags/vv_dags.py`:
+<http://localhost:8080>, với DAG trong `airflow/dags/vv_dags.py`:
 
 | DAG | Khi nào chạy | Các bước |
 |---|---|---|
-| `ci_kiem_tra_code` | Cứ 5 phút xem có commit mới không; có thì chạy | `lint` → `dinh_dang` → `test` |
 | `pipeline_khuyen_nghi` | Bấm chạy tay | `kiem_tra_du_lieu` → `dung_app` → `s1_etl` … `s5_train` → `bat_app` → `kiem_tra_he_thong` → `chot_chan_chi_so` |
 
 ```bash
 docker compose exec airflow airflow dags trigger pipeline_khuyen_nghi
-docker compose exec airflow airflow dags trigger ci_kiem_tra_code
 ```
 
 Đăng nhập giao diện bằng tài khoản đặt trong `.env`:
@@ -787,7 +788,8 @@ AIRFLOW_ADMIN_PASSWORD=mat_khau_cua_ban
 Thiếu `AIRFLOW_ADMIN_PASSWORD` thì Airflow không khởi động và log báo rõ lý do.
 
 - Mỗi task chạy trong một container riêng tạo từ image của app, nên môi trường giống hệt
-  `scripts/verify.sh`. Airflow điều khiển Docker qua một proxy chỉ mở các thao tác cần thiết.
+  `scripts/verify.sh`. Airflow gắn thẳng `docker.sock` để điều khiển Docker
+  (toàn quyền với Docker — không mở cổng 8080 ra Internet).
 - `pipeline_khuyen_nghi` chạy từng bước S1…S5 thành task riêng: biết ngay bước nào hỏng, mất
   bao lâu, và chạy lại được từ bước hỏng. App bị dừng trong lúc chạy (DuckDB chỉ cho một
   tiến trình ghi) và chỉ bật lại khi mọi bước xong.

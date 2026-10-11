@@ -1,4 +1,9 @@
-"""Cấu hình dùng chung — đọc từ biến môi trường (.env)."""
+"""Cấu hình dùng chung.
+
+Tham số bài toán và tài nguyên là hằng số cố định ở đây; muốn đổi thì sửa file này.
+Chỉ đường dẫn, tài khoản Neo4j và các biến của chế độ chạy mẫu (scripts/verify.sh
+sample) còn đọc từ biến môi trường.
+"""
 
 import os
 import re
@@ -11,33 +16,33 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "changeme")  # giá trị thật nằm trong .env
 
-HORIZON = int(os.getenv("HORIZON", "20"))  # số phiên nhìn tới (nhãn)
-TOPK = int(os.getenv("TOPK", "10"))
-# Nhịp ra quyết định: mặc định là từng phiên giao dịch. Có thể chuyển về phiên cuối
+HORIZON = 20  # số phiên nhìn tới (nhãn)
+TOPK = 10
+# Nhịp ra quyết định: từng phiên giao dịch. Có thể chuyển về phiên cuối
 # mỗi "week" hoặc "month" để so sánh với các phiên bản cũ.
-DECISION_FREQ = os.getenv("DECISION_FREQ", "day").strip().lower()
+DECISION_FREQ = "day"
 if DECISION_FREQ not in ("day", "week", "month"):
     raise ValueError("DECISION_FREQ phải là 'day', 'week' hoặc 'month'")
-COOC_WINDOW = int(os.getenv("COOC_WINDOW", "180"))  # cửa sổ đồng mua (ngày)
-COOC_TOPN = int(os.getenv("COOC_TOPN", "25"))  # số mã đồng mua mạnh nhất / mã
+COOC_WINDOW = 180  # cửa sổ đồng mua (ngày)
+COOC_TOPN = 25  # số mã đồng mua mạnh nhất / mã
 
 # Điểm cuối cho nhánh MUA = MARKET_WEIGHT * điểm nghiên cứu
 #                              + (1-MARKET_WEIGHT) * điểm hành vi khách.
-MARKET_WEIGHT = float(os.getenv("MARKET_WEIGHT", "0.60"))
-BEHAVIOR_HALF_LIFE = int(os.getenv("BEHAVIOR_HALF_LIFE", "90"))
+MARKET_WEIGHT = 0.60
+BEHAVIOR_HALF_LIFE = 90
 
 if not 0 <= MARKET_WEIGHT <= 1:
     raise ValueError("MARKET_WEIGHT phải nằm trong [0, 1]")
 
 # Phân loại kỳ hạn đầu tư của khách từ thời gian nắm giữ thực tế (xem s2_state).
-SHORT_HOLD_DAYS = int(os.getenv("SHORT_HOLD_DAYS", "30"))  # bán hết trong <= 1 tháng
-LONG_HOLD_DAYS = int(os.getenv("LONG_HOLD_DAYS", "90"))  # giữ > 3 tháng
+SHORT_HOLD_DAYS = 30  # bán hết trong <= 1 tháng
+LONG_HOLD_DAYS = 90  # giữ > 3 tháng
 # tỷ lệ bằng chứng tối thiểu để kết luận khách SHORT hoặc LONG
-HOLD_EVIDENCE_THRESHOLD = float(os.getenv("HOLD_EVIDENCE_THRESHOLD", "0.50"))
+HOLD_EVIDENCE_THRESHOLD = 0.50
 # số vòng mua-bán tối thiểu trước khi dám kết luận
-HOLD_MIN_EVIDENCE = int(os.getenv("HOLD_MIN_EVIDENCE", "3"))
+HOLD_MIN_EVIDENCE = 3
 # cửa sổ (ngày) đo mức độ giao dịch gần đây của khách
-RECENT_WINDOW = int(os.getenv("RECENT_WINDOW", "90"))
+RECENT_WINDOW = 90
 
 if not 0 < SHORT_HOLD_DAYS < LONG_HOLD_DAYS:
     raise ValueError("Cần 0 < SHORT_HOLD_DAYS < LONG_HOLD_DAYS")
@@ -45,15 +50,15 @@ if not 0 < HOLD_EVIDENCE_THRESHOLD <= 1:
     raise ValueError("HOLD_EVIDENCE_THRESHOLD phải nằm trong (0, 1]")
 
 # Phí mua tính vào giá vốn (0,15%) — khớp với avg_cost trong customer_holdings.csv.
-BUY_FEE = float(os.getenv("BUY_FEE", "0.0015"))
+BUY_FEE = 0.0015
 
 # ---------- Đồ thị: khách tương tự (Neo4j) ----------
 # số khách tương tự giữ lại cho mỗi khách, và số mã chung tối thiểu để tính là giống
-PEER_TOPK = int(os.getenv("PEER_TOPK", "20"))
-PEER_MIN_SHARED = int(os.getenv("PEER_MIN_SHARED", "2"))
+PEER_TOPK = 20
+PEER_MIN_SHARED = 2
 
 # số lát cắt thời gian gửi tới Neo4j cùng lúc ở bước S3
-GRAPH_WORKERS = int(os.getenv("GRAPH_WORKERS", "2"))
+GRAPH_WORKERS = 2
 
 # ---------- Trọng số đặt tay của các điểm thành phần ----------
 # Gom về một chỗ để dễ thử nghiệm. Các điểm này chỉ là ĐẶC TRƯNG đưa vào model
@@ -88,11 +93,9 @@ MARKET_WEIGHT_GRID = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 # Model danh mục chỉ học / đánh giá trên mỗi mốc thứ PORTFOLIO_TRAIN_STRIDE (tính theo
 # số thứ tự phiên). Ở nhịp ngày bảng train_portfolio có ~8,7 triệu dòng: nạp hết vào
 # pandas + LightGBM vượt trần 5 GB của container (exit 137), trong khi các mốc liền
-# nhau gần như lặp lại nhau (cửa sổ nhãn 20 phiên chồng lên nhau). Mặc định 5 ở nhịp
-# ngày (tương đương nhịp tuần), 1 ở các nhịp khác. App vẫn chấm điểm ở mọi mốc.
-PORTFOLIO_TRAIN_STRIDE = int(
-    os.getenv("PORTFOLIO_TRAIN_STRIDE") or (5 if DECISION_FREQ == "day" else 1)
-)
+# nhau gần như lặp lại nhau (cửa sổ nhãn 20 phiên chồng lên nhau). 5 ở nhịp ngày
+# (tương đương nhịp tuần), 1 ở các nhịp khác. App vẫn chấm điểm ở mọi mốc.
+PORTFOLIO_TRAIN_STRIDE = 5 if DECISION_FREQ == "day" else 1
 if PORTFOLIO_TRAIN_STRIDE < 1:
     raise ValueError("PORTFOLIO_TRAIN_STRIDE phải >= 1")
 
@@ -114,15 +117,15 @@ ABLATE_FEATURES = [
     x.strip() for x in os.getenv("ABLATE_FEATURES", "").split(",") if x.strip()
 ]
 
-GRADIO_PORT = int(os.getenv("GRADIO_PORT", "7860"))
+GRADIO_PORT = 7860
 
-DUCKDB_MEMORY = os.getenv("DUCKDB_MEMORY", "3GB")
+DUCKDB_MEMORY = "3GB"
 # DuckDB dùng thêm bộ nhớ ngoài memory_limit theo từng luồng. Với 12 luồng, bước S4
 # từng chạm 4,7 GB trên trần 5 GB của container và bị kill ngẫu nhiên (exit 137).
-DUCKDB_THREADS = int(os.getenv("DUCKDB_THREADS", "4"))
+DUCKDB_THREADS = 4
 # Số mốc quyết định xử lý mỗi lô khi S2/S4 ghép "mọi mốc x lịch sử trước mốc". Ở nhịp
 # ngày có khoảng 1.000 mốc; ghép một lần thì container hết RAM (exit 137).
-DATE_CHUNK = int(os.getenv("DATE_CHUNK", "25"))
+DATE_CHUNK = 25
 if DATE_CHUNK < 1:
     raise ValueError("DATE_CHUNK phải >= 1")
 # Chỗ DuckDB tràn dữ liệu ra đĩa. Để trong container, không để trong artifacts/:
@@ -145,6 +148,27 @@ def connect(read_only: bool = False):
     con.execute(f"SET temp_directory='{TMP_DIR}'")
     con.execute("SET preserve_insertion_order=false")
     return con
+
+
+def write_table(con, name: str, df, casts: dict | None = None) -> None:
+    """Ghi một DataFrame thành bảng DuckDB, giữ nguyên thứ tự cột.
+
+    Cột ngày của pandas (datetime64) được lưu thành DATE; `casts` ép kiểu thêm cho
+    từng cột khi kiểu pandas không khớp kiểu mong muốn (ví dụ {"ts": "TIME"}).
+    """
+    import pandas as pd
+
+    casts = dict(casts or {})
+    for c in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[c]):
+            casts.setdefault(c, "DATE")
+    cols = ", ".join(
+        f'CAST("{c}" AS {casts[c]}) AS "{c}"' if c in casts else f'"{c}"'
+        for c in df.columns
+    )
+    con.register("_write_df", df)
+    con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT {cols} FROM _write_df")
+    con.unregister("_write_df")
 
 
 _CREATE = re.compile(r"\s*CREATE OR REPLACE TABLE (\w+) AS", re.IGNORECASE)

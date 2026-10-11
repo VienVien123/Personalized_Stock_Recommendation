@@ -3,10 +3,17 @@ Bước 1 — ETL
 Đọc 7 file CSV thô (6 file dữ liệu + nhật ký khuyến nghị PHS) -> làm sạch -> chuẩn hoá đơn vị -> ghi vào DuckDB.
 
 Xử lý sẵn 3 cái bẫy của bộ dữ liệu:
-  1. BOM UTF-8 ở đầu 3 file  -> DuckDB tự bỏ, ta chỉ đặt lại tên cột
+  1. BOM UTF-8 ở đầu 3 file  -> đọc bằng encoding utf-8-sig
   2. Đơn vị giá khác nhau    -> quy hết về VND (bảng giá x 1000)
   3. Giá lệnh ngoài biên độ  -> gắn cờ is_outlier, KHÔNG xoá
+
+Dữ liệu ở bước này nhỏ (dưới 1 triệu dòng mỗi bảng) nên xử lý bằng pandas cho dễ
+đọc; mỗi bảng là một hàm. Các bước sau làm việc với bảng hàng chục triệu dòng nên
+vẫn dùng SQL của DuckDB.
 """
+
+import numpy as np
+import pandas as pd
 
 from config import (
     DATA_DIR,
@@ -16,20 +23,366 @@ from config import (
     SAMPLE_SEED,
     connect,
     log,
+    write_table,
 )
 
 
-def sample(column: str) -> str:
-    """Điều kiện SQL giữ lại SAMPLE_PCT % khách. Chọn theo băm của mã khách nên một
-    khách hoặc có đủ mọi giao dịch, hoặc vắng hẳn — lịch sử từng người không bị cắt."""
+def read_csv(name: str, **kwargs) -> pd.DataFrame:
+    # round_trip: đọc số thực chính xác tới chữ số cuối, giống DuckDB
+    return pd.read_csv(
+        f"{DATA_DIR}/{name}",
+        encoding="utf-8-sig",
+        float_precision="round_trip",
+        **kwargs,
+    )
+
+
+def keep_customers(con, ids: pd.Series) -> pd.Series:
+    """Cờ giữ lại SAMPLE_PCT % khách. Chọn theo băm của mã khách nên một khách hoặc
+    có đủ mọi giao dịch, hoặc vắng hẳn — lịch sử từng người không bị cắt."""
     if SAMPLE_PCT >= 100:
-        return "TRUE"
-    return f"HASH({column} || '{SAMPLE_SEED}') % 100 < {SAMPLE_PCT}"
+        return pd.Series(True, index=ids.index)
+    con.register("_ids", pd.DataFrame({"id": ids.unique()}))
+    kept = con.execute(
+        f"SELECT id FROM _ids WHERE HASH(id || '{SAMPLE_SEED}') % 100 < {SAMPLE_PCT}"
+    ).fetchall()
+    con.unregister("_ids")
+    return ids.isin({r[0] for r in kept})
 
 
+# ---------------------------------------------------------------- danh mục, giá
+def load_securities() -> pd.DataFrame:
+    sec = read_csv("securities_master.csv", dtype=str)
+    columns = ["stock_code", "company_name", "exchange", "instrument_type"]
+    return sec[[*columns, "icb_code", "icb_name"]]
+
+
+def load_prices() -> pd.DataFrame:
+    """Giá cổ phiếu theo ngày; file tính bằng nghìn VND -> đổi sang VND."""
+    raw = read_csv(
+        "stock_market_daily.csv", dtype={"stock_code": str}, parse_dates=["date"]
+    )
+    raw = raw[raw["close"] > 0]
+    return pd.DataFrame(
+        {
+            "d": raw["date"],
+            "stock_code": raw["stock_code"],
+            "o": raw["open"] * 1000,
+            "h": raw["high"] * 1000,
+            "l": raw["low"] * 1000,
+            "c": raw["close"] * 1000,
+            "v": raw["volume"].astype("int64"),
+        }
+    )
+
+
+def load_index() -> pd.DataFrame:
+    raw = read_csv(
+        "market_index_daily.csv", dtype={"index_code": str}, parse_dates=["date"]
+    )
+    return raw.rename(columns={"date": "d", "close": "c"})[["d", "index_code", "c"]]
+
+
+def trading_calendar(px: pd.DataFrame) -> pd.DataFrame:
+    """Mọi ngày có giao dịch, đánh số phiên dn = 1, 2, 3, ..."""
+    days = np.sort(px["d"].unique())
+    return pd.DataFrame({"d": days, "dn": np.arange(1, len(days) + 1)})
+
+
+def pick_decision_dates(daycal: pd.DataFrame) -> pd.DataFrame:
+    """Mốc ra quyết định: mọi phiên (day) hoặc phiên cuối mỗi tuần / tháng."""
+    dates = daycal.rename(columns={"d": "t"})
+    if DECISION_FREQ == "day":
+        return dates
+    period = {"week": "W", "month": "M"}[DECISION_FREQ]
+    last = dates.groupby(dates["t"].dt.to_period(period))["t"].transform("max")
+    return dates[dates["t"] == last].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- khách hàng
+def load_transactions(con, px: pd.DataFrame) -> pd.DataFrame:
+    """Lệnh mua/bán của khách (giá đã là VND) + cờ giá nằm ngoài biên độ phiên."""
+    text = ["transaction_id", "customer_id", "stock_code", "side", "exchange"]
+    raw = read_csv(
+        "customer_transactions_raw.csv",
+        dtype=dict.fromkeys([*text, "execution_time"], str),
+        parse_dates=["trade_date"],
+    )
+    raw = raw[keep_customers(con, raw["customer_id"])]
+    txn = pd.DataFrame(
+        {
+            "transaction_id": raw["transaction_id"],
+            "customer_id": raw["customer_id"],
+            "stock_code": raw["stock_code"],
+            "side": raw["side"],
+            "qty": raw["quantity"].astype("int64"),
+            "price": raw["price"].astype(float),
+            "d": raw["trade_date"],
+            "ts": raw["execution_time"],
+            "exchange": raw["exchange"],
+        }
+    )
+    txn["value"] = txn["qty"] * txn["price"]
+
+    # cờ bất thường: giá lệnh nằm ngoài khoảng thấp nhất - cao nhất của phiên
+    day = txn[["stock_code", "d"]].merge(
+        px[["stock_code", "d", "h", "l"]], on=["stock_code", "d"], how="left"
+    )
+    outside = (txn["price"].to_numpy() > day["h"].to_numpy()) | (
+        txn["price"].to_numpy() < day["l"].to_numpy()
+    )
+    txn["is_outlier"] = pd.array(outside, dtype="boolean")
+    txn.loc[day["h"].isna().to_numpy(), "is_outlier"] = pd.NA  # không có giá phiên
+    return txn
+
+
+def load_profiles(con) -> pd.DataFrame:
+    """Hồ sơ khách: chỉ còn loại khách + ngày mở tài khoản. Kỳ hạn đầu tư không còn
+    được khai báo sẵn mà suy ra từ hành vi nắm giữ thực tế ở s2 (cust_horizon)."""
+    raw = read_csv(
+        "customer_profile.csv",
+        dtype={"customer_id": str, "customer_type": str},
+        parse_dates=["account_open_date"],
+    )
+    raw = raw[keep_customers(con, raw["customer_id"])]
+    return raw.rename(columns={"account_open_date": "open_date"})[
+        ["customer_id", "customer_type", "open_date"]
+    ]
+
+
+def load_holdings(con) -> pd.DataFrame:
+    """Snapshot nắm giữ cuối tháng. Chỉ còn dùng để ĐỐI CHIẾU: vị thế tại mọi mốc được
+    dựng lại từ giao dịch ở s2, và phải khớp với file này tại các ngày chốt tháng."""
+    raw = read_csv(
+        "customer_holdings.csv",
+        dtype={"customer_id": str, "stock_code": str},
+        parse_dates=["snapshot_date"],
+    )
+    raw = raw[keep_customers(con, raw["customer_id"])]
+    return pd.DataFrame(
+        {
+            "t": raw["snapshot_date"],
+            "customer_id": raw["customer_id"],
+            "stock_code": raw["stock_code"],
+            "qty": raw["quantity"].astype("int64"),
+            "avg_cost": raw["avg_cost"].astype(float),
+            "mv": raw["market_value"].astype(float),
+        }
+    )
+
+
+# ---------------------------------------------------------------- khuyến nghị PHS
+def mid_price(text: str) -> float:
+    """Vùng giá "20.0 - 20.5" -> điểm giữa 20.25; một số "21" -> 21."""
+    parts = [float(x) for x in str(text).split("-")]
+    return sum(parts) / len(parts)
+
+
+def pair_phs_calls() -> pd.DataFrame:
+    """Ghép lệnh MỞ với lệnh ĐÓNG của nhật ký khuyến nghị PHS.
+
+    File gốc là nhật ký sự kiện: BUY mở một khuyến nghị, TAKE_PROFIT/CUT_LOSS đóng
+    nó. Lệnh BUY thứ k của một mã được đóng bởi lệnh đóng thứ k của mã đó.
+    Giá trong file tính theo nghìn VND.
+    """
+    raw = read_csv("candidate_stocks_phs_skill.csv", dtype=str)
+    pnl = raw["realizedProfitLoss"].str.strip().replace("", np.nan).str.replace("%", "")
+    ev = pd.DataFrame(
+        {
+            "stock_code": raw["symbol"].str.strip().str.upper(),
+            "call_type": raw["recommendationType"].str.strip().str.upper(),
+            "d": pd.to_datetime(
+                raw["recommendationDate"].str.strip(), format="%d/%m/%Y"
+            ),
+            "price": raw["recommendationPrice"].map(mid_price) * 1000,
+            "target_price": raw["targetPrice"].astype(float) * 1000,
+            "cut_loss_price": raw["cutLossPrice"].astype(float) * 1000,
+            "realized_pnl_pct": pnl.astype(float),
+        }
+    )
+
+    def numbered(events):
+        """Đánh số k = 0, 1, 2, ... theo thời gian trong từng mã."""
+        events = events.sort_values(["stock_code", "d", "target_price"])
+        return events.assign(k=events.groupby("stock_code").cumcount())
+
+    opens = numbered(ev[ev["call_type"] == "BUY"])
+    closes = numbered(ev[ev["call_type"].isin(["TAKE_PROFIT", "CUT_LOSS"])])
+    calls = opens.merge(
+        closes[["stock_code", "k", "d", "call_type", "realized_pnl_pct"]],
+        on=["stock_code", "k"],
+        how="left",
+        suffixes=("", "_close"),
+    )
+    # lệnh đóng phải đến sau lệnh mở, nếu không coi như chưa đóng
+    bad = calls["d_close"] < calls["d"]
+    calls.loc[bad, ["d_close", "call_type_close", "realized_pnl_pct_close"]] = np.nan
+
+    return pd.DataFrame(
+        {
+            "stock_code": calls["stock_code"],
+            "open_d": calls["d"],
+            "close_d": calls["d_close"],
+            "close_type": calls["call_type_close"],
+            "entry_price": calls["price"],
+            "target_price": calls["target_price"],
+            "cut_loss_price": calls["cut_loss_price"],
+            "realized_pnl_pct": calls["realized_pnl_pct_close"],
+        }
+    )
+
+
+def research_signals(dates, calls, px) -> pd.DataFrame:
+    """Tín hiệu nghiên cứu tại từng mốc t (point-in-time), mỗi (t, mã) một tín hiệu:
+      BUY  : PHS mở khuyến nghị mới đúng ngày t.
+      SELL : PHS chốt lời/cắt lỗ đúng ngày t (BUY cùng ngày được ưu tiên).
+      HOLD : khuyến nghị BUY cũ còn mở, chưa có tín hiệu mới trong ngày.
+    Không lặp lại BUY cũ thành khuyến nghị mua mới ở các ngày sau.
+    """
+    t = dates[["t"]]
+    key = ["t", "stock_code"]
+
+    buy = t.merge(calls, left_on="t", right_on="open_d")
+    buy = buy.merge(
+        px[["stock_code", "d", "c"]].rename(columns={"d": "t"}), on=key, how="left"
+    ).drop_duplicates(key)
+    # MarketScore = dư địa tăng (%) từ giá đóng cửa ngày t tới giá mục tiêu
+    price_now = buy["c"].fillna(buy["entry_price"]).replace(0, np.nan)
+    buy["market_score"] = 100.0 * (buy["target_price"] / price_now - 1)
+    buy["candidate_rank"] = buy.groupby("t")["market_score"].rank(
+        method="min", ascending=False
+    )
+    buy = buy.assign(recommendation="BUY", call_type="BUY", call_date=buy["open_d"])
+
+    sell = t.merge(calls, left_on="t", right_on="close_d").drop_duplicates(key)
+    sell = sell.assign(
+        recommendation="SELL", call_type=sell["close_type"], call_date=sell["close_d"]
+    )
+
+    hold = t.merge(calls, how="cross")
+    still_open = (hold["open_d"] < hold["t"]) & (
+        hold["close_d"].isna() | (hold["close_d"] > hold["t"])
+    )
+    hold = hold[still_open].sort_values("open_d", ascending=False)
+    hold = without(without(hold, buy, key), sell, key).drop_duplicates(key)
+    hold = hold.assign(
+        recommendation="HOLD", call_type="HOLD", call_date=hold["open_d"]
+    )
+
+    out = pd.concat([buy, without(sell, buy, key), hold], ignore_index=True)
+    columns = ["d", "stock_code", "market_score", "recommendation", "candidate_rank"]
+    columns += [
+        "call_type",
+        "call_date",
+        "entry_price",
+        "target_price",
+        "cut_loss_price",
+    ]
+    return out.rename(columns={"t": "d"})[columns]
+
+
+def without(df, other, key):
+    """Các dòng của df mà khoá `key` không xuất hiện trong other."""
+    hit = df[key].merge(
+        other[key].drop_duplicates(), on=key, how="left", indicator=True
+    )
+    return df[(hit["_merge"] == "left_only").to_numpy()]
+
+
+# ---------------------------------------------------------------- đặc trưng giá
+def window_start(key: np.ndarray, back: int) -> np.ndarray:
+    """Vị trí dòng đầu tiên có số phiên >= dn - back (cùng mã). `key` đã sắp tăng."""
+    return np.searchsorted(key, key - back, side="left")
+
+
+def window_end(key: np.ndarray, ahead: int) -> np.ndarray:
+    """Vị trí dòng cuối cùng có số phiên <= dn + ahead (cùng mã)."""
+    return np.searchsorted(key, key + ahead, side="right") - 1
+
+
+def price_features(px, idx, daycal) -> pd.DataFrame:
+    """Đặc trưng giá theo phiên + kết quả lợi suất tương lai để audit.
+
+    y_stock/excess_fwd KHÔNG đi vào model hành vi. Chúng chỉ được dùng để đo kết quả
+    và tính tay nghề lịch sử khi cửa sổ 20 phiên đã hoàn tất trước t.
+    Cửa sổ tính theo số phiên thị trường (dn), không theo số dòng, nên không bị lệch
+    khi một mã nghỉ giao dịch.
+    """
+    df = px[["stock_code", "d", "c", "v"]].merge(daycal, on="d")
+    df = df.sort_values(["stock_code", "dn"], ignore_index=True)
+    # khoá (mã, dn) tăng dần: tìm biên cửa sổ bằng tìm kiếm nhị phân, không lặp từng mã
+    stock_id = df["stock_code"].astype("category").cat.codes.to_numpy().astype(np.int64)
+    key = stock_id * 1_000_000 + df["dn"].to_numpy()
+    c = df["c"].to_numpy()
+    df["r1"] = df["c"] / df.groupby("stock_code")["c"].shift(1) - 1
+
+    # tổng trong cửa sổ 20 phiên = tổng dồn tới dòng hiện tại - tổng dồn trước đầu cửa sổ
+    start20 = window_start(key, 20)
+
+    def sum20(values: pd.Series) -> np.ndarray:
+        incl = values.groupby(df["stock_code"]).cumsum().to_numpy()
+        excl = incl - values.to_numpy()
+        return incl - excl[start20]
+
+    r1 = df["r1"].fillna(0.0)
+    n = np.arange(len(df)) - start20 + 1  # số phiên có giao dịch trong cửa sổ
+    n_r1 = sum20(df["r1"].notna().astype(float))
+    s1, s2 = sum20(r1), sum20(r1**2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        var = (s2 - s1**2 / n_r1) / (n_r1 - 1)
+    vol_20 = np.where(n_r1 >= 2, np.sqrt(np.clip(var, 0, None)), np.nan)
+
+    # VNINDEX: giá hôm nay và sau HORIZON phiên
+    vni = idx[idx["index_code"] == "VNINDEX"].merge(daycal, on="d").sort_values("dn")
+    vni_key = vni["dn"].to_numpy()
+    vni = pd.DataFrame(
+        {
+            "dn": vni_key,
+            "idx_c": vni["c"].to_numpy(),
+            "idx_c_fwd": vni["c"].to_numpy()[window_end(vni_key, HORIZON)],
+        }
+    )
+
+    df = df.assign(
+        c_5a=c[window_start(key, 5)],
+        c_20a=c[start20],
+        c_60a=c[window_start(key, 60)],
+        c_fwd=c[window_end(key, HORIZON)],
+        vol_20=vol_20,
+        v_avg20=sum20(df["v"].astype(float)) / n,
+        up_ratio_20=sum20((df["r1"] > 0).astype(float)) / n,
+        n_sessions_20=n,
+    ).merge(vni, on="dn")
+
+    stock_growth = df["c_fwd"] / df["c"]
+    index_growth = df["idx_c_fwd"] / df["idx_c"]
+    return pd.DataFrame(
+        {
+            "stock_code": df["stock_code"],
+            "d": df["d"],
+            "dn": df["dn"],
+            "c": df["c"],
+            "v": df["v"],
+            "ret_5": df["c"] / df["c_5a"] - 1,
+            "ret_20": df["c"] / df["c_20a"] - 1,
+            "ret_60": df["c"] / df["c_60a"] - 1,
+            "vol_20": df["vol_20"],
+            "up_ratio_20": df["up_ratio_20"],
+            "n_sessions_20": df["n_sessions_20"],
+            "vol_ratio": df["v"] / df["v_avg20"].replace(0, np.nan),
+            "turnover": df["v"] * df["c"],
+            "fwd_ret": stock_growth - 1,
+            "idx_fwd_ret": index_growth - 1,
+            "excess_fwd": stock_growth - index_growth,
+            # kết quả audit: mã này có thắng VNINDEX trong HORIZON phiên tới không?
+            "y_stock": (stock_growth > index_growth).astype("int32"),
+        }
+    )
+
+
+# ---------------------------------------------------------------- chạy
 def main():
     con = connect()
-    D = DATA_DIR
     if SAMPLE_PCT < 100:
         log(
             "s1",
@@ -37,296 +390,77 @@ def main():
         )
 
     log("s1", "đọc CSV thô...")
-
-    # ---------- Danh mục mã ----------
-    con.execute(f"""
-    CREATE OR REPLACE TABLE sec AS
-    SELECT stock_code, company_name, exchange, instrument_type,
-           CAST(icb_code AS VARCHAR) AS icb_code, icb_name
-    FROM read_csv_auto('{D}/securities_master.csv', header=true);
-    """)
-
-    # ---------- Giá cổ phiếu: nghìn VND -> VND ----------
-    con.execute(f"""
-    CREATE OR REPLACE TABLE px AS
-    SELECT CAST(date AS DATE) AS d, stock_code,
-           open*1000 AS o, high*1000 AS h, low*1000 AS l, close*1000 AS c,
-           CAST(volume AS BIGINT) AS v
-    FROM read_csv_auto('{D}/stock_market_daily.csv', header=true)
-    WHERE close > 0;
-    """)
-
-    # ---------- Chỉ số ----------
-    con.execute(f"""
-    CREATE OR REPLACE TABLE idx AS
-    SELECT CAST(date AS DATE) AS d, index_code, close AS c
-    FROM read_csv_auto('{D}/market_index_daily.csv', header=true);
-    """)
-
-    # ---------- Lịch phiên giao dịch ----------
-    con.execute("""
-    CREATE OR REPLACE TABLE daycal AS
-    SELECT d, ROW_NUMBER() OVER (ORDER BY d) AS dn
-    FROM (SELECT DISTINCT d FROM px);
-    """)
-
-    # ---------- Giao dịch khách hàng (giá đã là VND) ----------
-    con.execute(f"""
-    CREATE OR REPLACE TABLE txn AS
-    SELECT t.transaction_id, t.customer_id, t.stock_code, t.side,
-           CAST(t.quantity AS BIGINT) AS qty,
-           CAST(t.price AS DOUBLE)    AS price,
-           CAST(t.trade_date AS DATE) AS d,
-           CAST(t.execution_time AS TIME) AS ts,
-           t.exchange,
-           CAST(t.quantity AS BIGINT) * CAST(t.price AS DOUBLE) AS value,
-           -- cờ bất thường: giá lệnh nằm ngoài biên độ cao/thấp của phiên
-           CASE WHEN p.h IS NULL THEN NULL
-                WHEN t.price > p.h OR t.price < p.l THEN TRUE ELSE FALSE END AS is_outlier
-    FROM read_csv_auto('{D}/customer_transactions_raw.csv', header=true) t
-    LEFT JOIN px p ON p.stock_code = t.stock_code AND p.d = CAST(t.trade_date AS DATE)
-    WHERE {sample("t.customer_id")};
-    """)
-
-    # ---------- Hồ sơ khách ----------
-    # File hồ sơ chỉ còn loại khách + ngày mở tài khoản. Kỳ hạn đầu tư không còn
-    # được khai báo sẵn mà suy ra từ hành vi nắm giữ thực tế ở s2 (cust_horizon).
-    con.execute(f"""
-    CREATE OR REPLACE TABLE prof AS
-    SELECT customer_id, customer_type,
-           CAST(account_open_date AS DATE) AS open_date
-    FROM read_csv_auto('{D}/customer_profile.csv', header=true)
-    WHERE {sample("customer_id")};
-    """)
-
-    # ---------- Snapshot nắm giữ cuối tháng ----------
-    # Chỉ còn dùng để ĐỐI CHIẾU: vị thế tại mọi mốc được dựng lại từ giao dịch ở
-    # s2, và phải khớp với file này tại các ngày chốt tháng.
-    con.execute(f"""
-    CREATE OR REPLACE TABLE hold AS
-    SELECT CAST(snapshot_date AS DATE) AS t, customer_id, stock_code,
-           CAST(quantity AS BIGINT) AS qty,
-           CAST(avg_cost AS DOUBLE)  AS avg_cost,
-           CAST(market_value AS DOUBLE) AS mv
-    FROM read_csv_auto('{D}/customer_holdings.csv', header=true)
-    WHERE {sample("customer_id")};
-    """)
-
-    # ---------- Mốc ra quyết định = từng phiên giao dịch / phiên cuối tuần / cuối tháng ----------
-    if DECISION_FREQ == "day":
-        con.execute("""
-        CREATE OR REPLACE TABLE decision_dates AS
-        SELECT d AS t, dn
-        FROM daycal
-        ORDER BY d;
-        """)
-    else:
-        con.execute(f"""
-    CREATE OR REPLACE TABLE decision_dates AS
-    SELECT d AS t, dn
-    FROM daycal
-    QUALIFY d = MAX(d) OVER (PARTITION BY DATE_TRUNC('{DECISION_FREQ}', d))
-    ORDER BY d;
-    """)
-
-    # ---------- Khuyến nghị PHS: ghép lệnh MỞ với lệnh ĐÓNG ----------
-    # File gốc là nhật ký sự kiện: BUY mở một khuyến nghị, TAKE_PROFIT/CUT_LOSS
-    # đóng nó. Lệnh BUY thứ k của một mã được đóng bởi lệnh đóng thứ k của mã đó.
-    # Giá trong file tính theo nghìn VND, vùng giá "20.0 - 20.5" lấy điểm giữa.
-    con.execute(f"""
-    CREATE OR REPLACE TABLE phs_calls AS
-    WITH ev AS (
-        SELECT UPPER(TRIM(symbol)) AS stock_code,
-               UPPER(TRIM(recommendationType)) AS call_type,
-               CAST(STRPTIME(TRIM(recommendationDate), '%d/%m/%Y') AS DATE) AS d,
-               LIST_AVG(LIST_TRANSFORM(STR_SPLIT(recommendationPrice, '-'),
-                        x -> CAST(TRIM(x) AS DOUBLE))) * 1000 AS price,
-               CAST(targetPrice AS DOUBLE) * 1000  AS target_price,
-               CAST(cutLossPrice AS DOUBLE) * 1000 AS cut_loss_price,
-               CAST(REPLACE(NULLIF(TRIM(realizedProfitLoss), ''), '%', '') AS DOUBLE)
-                   AS realized_pnl_pct
-        FROM read_csv('{D}/candidate_stocks_phs_skill.csv', header=true, all_varchar=true)
-    ),
-    o AS (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY d, target_price) AS k
-        FROM ev WHERE call_type = 'BUY'
-    ),
-    c AS (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY d, target_price) AS k
-        FROM ev WHERE call_type IN ('TAKE_PROFIT', 'CUT_LOSS')
-    )
-    SELECT o.stock_code, o.d AS open_d, c.d AS close_d, c.call_type AS close_type,
-           o.price AS entry_price, o.target_price, o.cut_loss_price,
-           c.realized_pnl_pct
-    FROM o LEFT JOIN c ON c.stock_code = o.stock_code AND c.k = o.k AND c.d >= o.d;
-    """)
-
-    # ---------- Tín hiệu nghiên cứu tại từng mốc t (point-in-time) ----------
-    #   BUY  : PHS mở khuyến nghị mới đúng ngày t.
-    #   SELL : PHS chốt lời/cắt lỗ đúng ngày t.
-    #   HOLD : khuyến nghị BUY cũ còn mở, chưa có tín hiệu mới trong ngày.
-    # Không lặp lại BUY cũ thành khuyến nghị mua mới ở các ngày sau.
-    con.execute("""
-    CREATE OR REPLACE TABLE research AS
-    WITH buy AS (
-        SELECT dd.t AS d, pc.stock_code, 'BUY' AS recommendation, 'BUY' AS call_type,
-               pc.open_d AS call_date, pc.entry_price, pc.target_price, pc.cut_loss_price,
-               100.0 * (pc.target_price / NULLIF(COALESCE(p.c, pc.entry_price), 0) - 1)
-                   AS market_score
-        FROM decision_dates dd
-        JOIN phs_calls pc ON pc.open_d = dd.t
-        LEFT JOIN px p ON p.stock_code = pc.stock_code AND p.d = dd.t
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY dd.t, pc.stock_code
-                                   ORDER BY pc.open_d DESC) = 1
-    ),
-    sell AS (
-        SELECT dd.t AS d, pc.stock_code, 'SELL' AS recommendation,
-               pc.close_type AS call_type, pc.close_d AS call_date,
-               pc.entry_price, pc.target_price, pc.cut_loss_price,
-               CAST(NULL AS DOUBLE) AS market_score
-        FROM decision_dates dd
-        JOIN phs_calls pc ON pc.close_d = dd.t
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY dd.t, pc.stock_code
-                                   ORDER BY pc.close_d DESC) = 1
-    ),
-    hold AS (
-        SELECT dd.t AS d, pc.stock_code, 'HOLD' AS recommendation,
-               'HOLD' AS call_type, pc.open_d AS call_date,
-               pc.entry_price, pc.target_price, pc.cut_loss_price,
-               CAST(NULL AS DOUBLE) AS market_score
-        FROM decision_dates dd
-        JOIN phs_calls pc ON pc.open_d < dd.t
-                         AND (pc.close_d IS NULL OR pc.close_d > dd.t)
-        WHERE NOT EXISTS (SELECT 1 FROM buy b
-                          WHERE b.d = dd.t AND b.stock_code = pc.stock_code)
-          AND NOT EXISTS (SELECT 1 FROM sell s
-                          WHERE s.d = dd.t AND s.stock_code = pc.stock_code)
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY dd.t, pc.stock_code
-                                   ORDER BY pc.open_d DESC) = 1
-    )
-    SELECT d, stock_code, market_score, recommendation,
-           CAST(RANK() OVER (PARTITION BY d ORDER BY market_score DESC) AS INT)
-               AS candidate_rank,
-           call_type, call_date, entry_price, target_price, cut_loss_price
-    FROM buy
-    UNION ALL
-    SELECT d, stock_code, market_score, recommendation, CAST(NULL AS INT),
-           call_type, call_date, entry_price, target_price, cut_loss_price
-    FROM sell
-    WHERE NOT EXISTS (SELECT 1 FROM buy b
-                      WHERE b.d = sell.d AND b.stock_code = sell.stock_code)
-    UNION ALL
-    SELECT d, stock_code, market_score, recommendation, CAST(NULL AS INT),
-           call_type, call_date, entry_price, target_price, cut_loss_price
-    FROM hold
-    """)
+    sec = load_securities()
+    px = load_prices()
+    idx = load_index()
+    daycal = trading_calendar(px)
+    dates = pick_decision_dates(daycal)
+    txn = load_transactions(con, px)
+    prof = load_profiles(con)
+    hold = load_holdings(con)
+    calls = pair_phs_calls()
+    research = research_signals(dates, calls, px)
 
     log("s1", "tính đặc trưng giá theo phiên (đà giá, biến động, thanh khoản)...")
+    sd = price_features(px, idx, daycal)
 
-    # ---------- Đặc trưng giá + kết quả lợi suất tương lai để audit ----------
-    # y_stock/excess_fwd KHÔNG đi vào model hành vi. Chúng chỉ được dùng để đo
-    # kết quả và tính tay nghề lịch sử khi cửa sổ 20 phiên đã hoàn tất trước t.
-    # Dùng RANGE theo số phiên thị trường (dn) nên không bị lệch khi mã nghỉ giao dịch.
-    con.execute(f"""
-    CREATE OR REPLACE TABLE sd AS
-    WITH b AS (
-        SELECT p.stock_code, p.d, k.dn, p.c, p.v
-        FROM px p JOIN daycal k ON k.d = p.d
-    ),
-    r AS (
-        SELECT *, c / NULLIF(LAG(c) OVER (PARTITION BY stock_code ORDER BY dn), 0) - 1 AS r1
-        FROM b
-    ),
-    w AS (
-        SELECT *,
-          FIRST_VALUE(c) OVER (PARTITION BY stock_code ORDER BY dn
-                               RANGE BETWEEN 5  PRECEDING AND CURRENT ROW) AS c_5a,
-          FIRST_VALUE(c) OVER (PARTITION BY stock_code ORDER BY dn
-                               RANGE BETWEEN 20 PRECEDING AND CURRENT ROW) AS c_20a,
-          FIRST_VALUE(c) OVER (PARTITION BY stock_code ORDER BY dn
-                               RANGE BETWEEN 60 PRECEDING AND CURRENT ROW) AS c_60a,
-          LAST_VALUE(c)  OVER (PARTITION BY stock_code ORDER BY dn
-                               RANGE BETWEEN CURRENT ROW AND {HORIZON} FOLLOWING) AS c_fwd,
-          STDDEV_SAMP(r1) OVER (PARTITION BY stock_code ORDER BY dn
-                               RANGE BETWEEN 20 PRECEDING AND CURRENT ROW) AS vol_20,
-          AVG(v) OVER (PARTITION BY stock_code ORDER BY dn
-                       RANGE BETWEEN 20 PRECEDING AND CURRENT ROW) AS v_avg20,
-          AVG(CASE WHEN r1 > 0 THEN 1.0 ELSE 0.0 END) OVER (PARTITION BY stock_code ORDER BY dn
-                       RANGE BETWEEN 20 PRECEDING AND CURRENT ROW) AS up_ratio_20,
-          COUNT(*) OVER (PARTITION BY stock_code ORDER BY dn
-                         RANGE BETWEEN 20 PRECEDING AND CURRENT ROW) AS n_sessions_20
-        FROM r
-    ),
-    vni AS (
-        SELECT k.dn, i.c,
-               LAST_VALUE(i.c) OVER (ORDER BY k.dn
-                       RANGE BETWEEN CURRENT ROW AND {HORIZON} FOLLOWING) AS c_fwd
-        FROM idx i JOIN daycal k ON k.d = i.d
-        WHERE i.index_code = 'VNINDEX'
-    )
-    SELECT w.stock_code, w.d, w.dn, w.c, w.v,
-           w.c / NULLIF(w.c_5a , 0) - 1 AS ret_5,
-           w.c / NULLIF(w.c_20a, 0) - 1 AS ret_20,
-           w.c / NULLIF(w.c_60a, 0) - 1 AS ret_60,
-           w.vol_20, w.up_ratio_20, w.n_sessions_20,
-           w.v / NULLIF(w.v_avg20, 0) AS vol_ratio,
-           w.v * w.c                   AS turnover,
-           w.c_fwd / NULLIF(w.c, 0) - 1                       AS fwd_ret,
-           vni.c_fwd / NULLIF(vni.c, 0) - 1                    AS idx_fwd_ret,
-           (w.c_fwd / NULLIF(w.c, 0)) - (vni.c_fwd / NULLIF(vni.c, 0)) AS excess_fwd,
-            -- kết quả audit: mã này có thắng VNINDEX trong {HORIZON} phiên tới không?
-           CASE WHEN (w.c_fwd / NULLIF(w.c, 0)) > (vni.c_fwd / NULLIF(vni.c, 0))
-                THEN 1 ELSE 0 END AS y_stock
-    FROM w JOIN vni ON vni.dn = w.dn;
-    """)
+    tables = {
+        "sec": (sec, None),
+        "px": (px, None),
+        "idx": (idx, None),
+        "daycal": (daycal, None),
+        "txn": (txn, {"ts": "TIME"}),
+        "prof": (prof, None),
+        "hold": (hold, None),
+        "decision_dates": (dates, None),
+        "phs_calls": (calls, None),
+        "research": (research, {"candidate_rank": "INTEGER"}),
+        "sd": (sd, None),
+    }
+    for name, (df, casts) in tables.items():
+        write_table(con, name, df, casts)
     con.execute("CREATE INDEX IF NOT EXISTS sd_idx ON sd(stock_code, dn);")
+    con.close()
 
-    for t in [
-        "sec",
-        "px",
-        "idx",
-        "txn",
-        "prof",
-        "hold",
-        "phs_calls",
-        "research",
-        "sd",
-        "decision_dates",
-    ]:
-        n = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        log("s1", f"  {t:16s} {n:>9,} dòng")
+    report({name: df for name, (df, _) in tables.items()})
+    log("s1", "xong.")
 
-    n_calls, n_seen = con.execute("""
-        SELECT COUNT(*), COUNT_IF(EXISTS (
-            SELECT 1 FROM decision_dates dd
-            WHERE dd.t >= pc.open_d AND (pc.close_d IS NULL OR dd.t < pc.close_d)))
-        FROM phs_calls pc
-    """).fetchone()
+
+def report(tables: dict) -> None:
+    """In số dòng mỗi bảng và vài con số để kiểm tra nhanh dữ liệu."""
+    for name, df in tables.items():
+        if name != "daycal":
+            log("s1", f"  {name:16s} {len(df):>9,} dòng")
+    calls, dates = tables["phs_calls"], tables["decision_dates"]
+    research, txn = tables["research"], tables["txn"]
+
+    # khuyến nghị nào còn mở tại ít nhất một mốc quyết định
+    pairs = calls.merge(dates[["t"]], how="cross")
+    open_at_t = (pairs["t"] >= pairs["open_d"]) & (
+        pairs["close_d"].isna() | (pairs["t"] < pairs["close_d"])
+    )
+    n_seen = pairs.loc[open_at_t, ["stock_code", "open_d"]].drop_duplicates().shape[0]
     log(
         "s1",
-        f"  nhịp quyết định '{DECISION_FREQ}': {n_seen}/{n_calls} khuyến nghị PHS "
+        f"  nhịp quyết định '{DECISION_FREQ}': {n_seen}/{len(calls)} khuyến nghị PHS "
         "còn mở tại ít nhất một mốc",
     )
 
-    n_dates, avg_buy, n_empty = con.execute("""
-        SELECT COUNT(*), AVG(n_buy), COUNT_IF(n_buy = 0) FROM (
-            SELECT dd.t, COUNT(r.stock_code) AS n_buy
-            FROM decision_dates dd
-            LEFT JOIN research r ON r.d = dd.t AND r.recommendation = 'BUY'
-            GROUP BY 1)
-    """).fetchone()
+    n_buy = (
+        research[research["recommendation"] == "BUY"]
+        .groupby("d")
+        .size()
+        .reindex(dates["t"], fill_value=0)
+    )
     log(
         "s1",
-        f"  rổ PHS BUY mới trong ngày: TB {avg_buy:.1f} mã/mốc | "
-        f"{n_empty}/{n_dates} mốc không có mã nào",
+        f"  rổ PHS BUY mới trong ngày: TB {n_buy.mean():.1f} mã/mốc | "
+        f"{(n_buy == 0).sum()}/{len(n_buy)} mốc không có mã nào",
     )
-
-    bad = con.execute(
-        "SELECT SUM(CASE WHEN is_outlier THEN 1 ELSE 0 END) FROM txn"
-    ).fetchone()[0]
-    log("s1", f"  lệnh có giá ngoài biên độ (đã gắn cờ): {bad:,}")
-    con.close()
-    log("s1", "xong.")
+    log(
+        "s1",
+        f"  lệnh có giá ngoài biên độ (đã gắn cờ): {int(txn['is_outlier'].sum()):,}",
+    )
 
 
 if __name__ == "__main__":

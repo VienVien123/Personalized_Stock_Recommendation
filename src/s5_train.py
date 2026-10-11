@@ -80,6 +80,22 @@ PARAMS = {
     "seed": 42,
 }
 RESEARCH_COLUMN_PREFIXES = ("market_score", "candidate_r", "research_", "in_research")
+# Cột của PHS bị loại khỏi model hành vi của từng nhánh (chỉ dùng khi ghép điểm cuối).
+BUY_RESEARCH_COLS = [
+    "market_score",
+    "candidate_rank",
+    "market_score_norm",
+    "target_price",
+    "cut_loss_price",
+]
+PORTFOLIO_RESEARCH_COLS = [
+    "market_score",
+    "candidate_rank",
+    "research_recommendation",
+    "research_call_type",
+    "in_research",
+    "research_sell_signal",
+]
 # các thước đo ghi vào bảng theo quý và bảng MARKET_WEIGHT
 REPORT_KEYS = ("hit@1", "ndcg@3", "mrr", "precision@1", "excess@1")
 MAX_ROUNDS = 400
@@ -380,7 +396,7 @@ def train_one(table, name, kind, extra_drop, baseline_col, stride=1):
     log("s5", f"=== MODEL {name.upper()} ===")
     if stride > 1:
         log("s5", f"[{name}] chỉ dùng mỗi mốc thứ {stride} để học và đánh giá")
-    df = load_table(table, stride) if stride > 1 else load_table(table)
+    df = load_table(table, stride)
     ablated = sorted(
         c for c in df.columns if any(fnmatch.fnmatch(c, p) for p in ABLATE_FEATURES)
     )
@@ -544,27 +560,14 @@ def main():
         "train_buy",
         "buy",
         kind="hybrid",
-        extra_drop=[
-            "market_score",
-            "candidate_rank",
-            "market_score_norm",
-            "target_price",
-            "cut_loss_price",
-        ],
+        extra_drop=BUY_RESEARCH_COLS,
         baseline_col="market_score_norm",
     )
     summary["portfolio"] = train_one(
         "train_portfolio",
         "portfolio",
         kind="research_first",
-        extra_drop=[
-            "market_score",
-            "candidate_rank",
-            "research_recommendation",
-            "research_call_type",
-            "in_research",
-            "research_sell_signal",
-        ],
+        extra_drop=PORTFOLIO_RESEARCH_COLS,
         baseline_col="research_sell_signal",
         stride=PORTFOLIO_TRAIN_STRIDE,
     )

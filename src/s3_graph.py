@@ -66,22 +66,79 @@ def wipe_graph(s):
     s.run("MATCH (n) CALL (n) { DELETE n } IN TRANSACTIONS OF 20000 ROWS").consume()
 
 
+def create_schema(s):
+    """Ràng buộc duy nhất cho node và chỉ mục theo ngày trên cạnh TRADED."""
+    s.run(
+        "CREATE CONSTRAINT cust_id IF NOT EXISTS "
+        "FOR (c:Customer) REQUIRE c.id IS UNIQUE"
+    )
+    s.run(
+        "CREATE CONSTRAINT stock_code IF NOT EXISTS "
+        "FOR (x:Stock) REQUIRE x.code IS UNIQUE"
+    )
+    s.run(
+        "CREATE CONSTRAINT sector_code IF NOT EXISTS "
+        "FOR (g:Sector) REQUIRE g.code IS UNIQUE"
+    )
+    s.run("CREATE INDEX traded_date IF NOT EXISTS FOR ()-[r:TRADED]-() ON (r.d)")
+
+
+def load_nodes(s, con):
+    """Node Khách / Mã / Ngành và cạnh Mã -IN_SECTOR-> Ngành."""
+    cust = con.execute("SELECT customer_id, customer_type FROM prof").fetchall()
+    s.run(
+        "UNWIND $rows AS r MERGE (c:Customer {id: r[0]}) SET c.type=r[1]",
+        rows=cust,
+    )
+
+    stk = con.execute(
+        "SELECT stock_code, exchange, icb_code, icb_name FROM sec"
+    ).fetchall()
+    s.run(
+        "UNWIND $rows AS r MERGE (x:Stock {code: r[0]}) "
+        "SET x.exchange=r[1], x.icb=r[2]",
+        rows=stk,
+    )
+
+    sect = con.execute("SELECT DISTINCT icb_code, icb_name FROM sec").fetchall()
+    s.run("UNWIND $rows AS r MERGE (g:Sector {code: r[0]}) SET g.name=r[1]", rows=sect)
+    s.run(
+        """UNWIND $rows AS r
+             MATCH (x:Stock {code:r[0]}), (g:Sector {code:r[1]})
+             MERGE (x)-[:IN_SECTOR]->(g)""",
+        rows=con.execute("SELECT stock_code, icb_code FROM sec").fetchall(),
+    )
+
+
+def load_trades(s, con):
+    """Mỗi lệnh giao dịch thành một cạnh Khách -TRADED-> Mã, mang theo ngày `d`."""
+    rows = con.execute("""SELECT customer_id, stock_code, CAST(d AS VARCHAR),
+                                 side, qty, value FROM txn ORDER BY d""").fetchall()
+    for i in range(0, len(rows), BATCH):
+        s.run(
+            """UNWIND $rows AS r
+                 MATCH (c:Customer {id: r[0]}), (x:Stock {code: r[1]})
+                 CREATE (c)-[:TRADED {d: r[2], side: r[3], qty: r[4],
+                                      value: r[5]}]->(x)""",
+            rows=rows[i : i + BATCH],
+        )
+        if (i // BATCH) % 10 == 0:
+            log("s3", f"   ... {min(i + BATCH, len(rows)):,}/{len(rows):,} cạnh")
+
+    n_new = s.run("MATCH ()-[r:TRADED]->() RETURN count(r) AS n").single()["n"]
+    if n_new != len(rows):
+        raise RuntimeError(
+            f"nạp đồ thị thiếu cạnh: {n_new:,}/{len(rows):,} — giao dịch có mã "
+            "hoặc khách không nằm trong danh mục?"
+        )
+    return len(rows)
+
+
 def load_graph(drv, con):
+    """Nạp đồ thị, hoặc bỏ qua nếu đồ thị đã khớp đúng bộ dữ liệu hiện tại."""
     log("s3", "tạo ràng buộc & chỉ mục...")
     with drv.session() as s:
-        s.run(
-            "CREATE CONSTRAINT cust_id IF NOT EXISTS "
-            "FOR (c:Customer) REQUIRE c.id IS UNIQUE"
-        )
-        s.run(
-            "CREATE CONSTRAINT stock_code IF NOT EXISTS "
-            "FOR (x:Stock) REQUIRE x.code IS UNIQUE"
-        )
-        s.run(
-            "CREATE CONSTRAINT sector_code IF NOT EXISTS "
-            "FOR (g:Sector) REQUIRE g.code IS UNIQUE"
-        )
-        s.run("CREATE INDEX traded_date IF NOT EXISTS FOR ()-[r:TRADED]-() ON (r.d)")
+        create_schema(s)
 
         fingerprint = data_fingerprint(con)
         rec = s.run("MATCH (m:Meta {key: 'graph'}) RETURN m.fingerprint AS fp").single()
@@ -101,56 +158,13 @@ def load_graph(drv, con):
             wipe_graph(s)
 
         log("s3", "nạp node Khách / Mã / Ngành...")
-        cust = con.execute("SELECT customer_id, customer_type FROM prof").fetchall()
-        s.run(
-            "UNWIND $rows AS r MERGE (c:Customer {id: r[0]}) SET c.type=r[1]",
-            rows=cust,
-        )
-
-        stk = con.execute(
-            "SELECT stock_code, exchange, icb_code, icb_name FROM sec"
-        ).fetchall()
-        s.run(
-            "UNWIND $rows AS r MERGE (x:Stock {code: r[0]}) "
-            "SET x.exchange=r[1], x.icb=r[2]",
-            rows=stk,
-        )
-
-        sect = con.execute("SELECT DISTINCT icb_code, icb_name FROM sec").fetchall()
-        s.run(
-            "UNWIND $rows AS r MERGE (g:Sector {code: r[0]}) SET g.name=r[1]", rows=sect
-        )
-        s.run(
-            """UNWIND $rows AS r
-                 MATCH (x:Stock {code:r[0]}), (g:Sector {code:r[1]})
-                 MERGE (x)-[:IN_SECTOR]->(g)""",
-            rows=con.execute("SELECT stock_code, icb_code FROM sec").fetchall(),
-        )
-
+        load_nodes(s, con)
         log("s3", "nạp cạnh TRADED (có mốc thời gian)...")
-        rows = con.execute("""SELECT customer_id, stock_code, CAST(d AS VARCHAR),
-                                     side, qty, value FROM txn ORDER BY d""").fetchall()
-        for i in range(0, len(rows), BATCH):
-            s.run(
-                """UNWIND $rows AS r
-                     MATCH (c:Customer {id: r[0]}), (x:Stock {code: r[1]})
-                     CREATE (c)-[:TRADED {d: r[2], side: r[3], qty: r[4],
-                                          value: r[5]}]->(x)""",
-                rows=rows[i : i + BATCH],
-            )
-            if (i // BATCH) % 10 == 0:
-                log("s3", f"   ... {min(i + BATCH, len(rows)):,}/{len(rows):,} cạnh")
-
-        n_new = s.run("MATCH ()-[r:TRADED]->() RETURN count(r) AS n").single()["n"]
-        if n_new != len(rows):
-            raise RuntimeError(
-                f"nạp đồ thị thiếu cạnh: {n_new:,}/{len(rows):,} — giao dịch có mã "
-                "hoặc khách không nằm trong danh mục?"
-            )
+        n_edges = load_trades(s, con)
         s.run(
             "MERGE (m:Meta {key: 'graph'}) SET m.fingerprint = $fp", fp=fingerprint
         ).consume()
-        log("s3", f"nạp xong {len(rows):,} cạnh.")
+        log("s3", f"nạp xong {n_edges:,} cạnh.")
 
 
 POP_QUERY = """
@@ -194,6 +208,35 @@ UNWIND peers AS p
 RETURN c1.id AS customer_id, p.peer AS peer_id, p.sim AS sim"""
 
 
+def query_slice(drv, q):
+    """Ba truy vấn của một lát cắt q, trong session riêng (chạy được song song)."""
+    t = str(q)
+    t0 = str(q - dt.timedelta(days=COOC_WINDOW))
+    with drv.session() as s:
+        pop = pd.DataFrame(s.run(POP_QUERY, t0=t0, t=t).data())
+        co = pd.DataFrame(s.run(COOC_QUERY, t0=t0, t=t).data())
+        peer = pd.DataFrame(
+            s.run(
+                PEER_QUERY, t0=t0, t=t, k=PEER_TOPK, min_shared=PEER_MIN_SHARED
+            ).data()
+        )
+    # đồng mua là quan hệ hai chiều -> ghi cả 2 hướng cho dễ join
+    co = pd.concat([co, co.rename(columns={"a": "b", "b": "a"})], ignore_index=True)
+    return t, pop, co, peer
+
+
+def append_slice(con, table, t, df, columns):
+    """Ghi một lát cắt vào DuckDB ngay, không giữ mọi lát cắt trong RAM."""
+    if df.empty:
+        return
+    df.insert(0, "qt", t)
+    con.register("_graph_df", df)
+    con.execute(
+        f"INSERT INTO {table} SELECT CAST(qt AS DATE), {columns} FROM _graph_df"
+    )
+    con.unregister("_graph_df")
+
+
 def extract_features(drv, con):
     """Tính đặc trưng đồ thị tại từng mốc cuối tháng — luôn có WHERE r.d < t."""
     slices = [
@@ -217,60 +260,24 @@ def extract_features(drv, con):
         qt DATE, customer_id VARCHAR, peer_id VARCHAR, sim DOUBLE);
     """)
 
-    def append(table, df, columns):
-        """Ghi từng lát cắt vào DuckDB ngay, không giữ mọi lát cắt trong RAM."""
-        if df.empty:
-            return
-        con.register("_graph_df", df)
-        con.execute(
-            f"INSERT INTO {table} SELECT CAST(qt AS DATE), {columns} FROM _graph_df"
-        )
-        con.unregister("_graph_df")
-
-    def query_slice(q):
-        """Ba truy vấn của một lát cắt, trong session riêng (chạy được song song)."""
-        t = str(q)
-        t0 = str(q - dt.timedelta(days=COOC_WINDOW))
-        with drv.session() as s:
-            pop = pd.DataFrame(s.run(POP_QUERY, t0=t0, t=t).data())
-            co = pd.DataFrame(s.run(COOC_QUERY, t0=t0, t=t).data())
-            peer = pd.DataFrame(
-                s.run(
-                    PEER_QUERY, t0=t0, t=t, k=PEER_TOPK, min_shared=PEER_MIN_SHARED
-                ).data()
-            )
-        return t, pop, co, peer
-
     # Neo4j Community chạy mỗi truy vấn trên một nhân, nên gửi vài lát cắt cùng lúc
     # để dùng nhiều nhân. Ghi vào DuckDB vẫn tuần tự ở luồng chính, theo đúng thứ tự.
     n_pop = n_cooc = n_peer = 0
     with ThreadPoolExecutor(max_workers=GRAPH_WORKERS) as pool:
-        for i, (t, pop, co, peer) in enumerate(pool.map(query_slice, slices)):
-            if not pop.empty:
-                pop.insert(0, "qt", t)
-                append(
-                    "graph_pop",
-                    pop,
-                    "stock_code, n_buyers, buy_value, n_sellers, sell_value",
-                )
-            if not co.empty:
-                # đồng mua là quan hệ hai chiều -> ghi cả 2 hướng cho dễ join
-                both = pd.concat(
-                    [co, co.rename(columns={"a": "b", "b": "a"})], ignore_index=True
-                )
-                both.insert(0, "qt", t)
-                append("graph_cooc", both, "a, b, co")
-            if not peer.empty:
-                peer.insert(0, "qt", t)
-                append("graph_peer", peer, "customer_id, peer_id, sim")
+        results = pool.map(lambda q: query_slice(drv, q), slices)
+        for i, (t, pop, co, peer) in enumerate(results):
+            pop_cols = "stock_code, n_buyers, buy_value, n_sellers, sell_value"
+            append_slice(con, "graph_pop", t, pop, pop_cols)
+            append_slice(con, "graph_cooc", t, co, "a, b, co")
+            append_slice(con, "graph_peer", t, peer, "customer_id, peer_id, sim")
 
             n_pop += len(pop)
-            n_cooc += 2 * len(co)
+            n_cooc += len(co)
             n_peer += len(peer)
             if i % 6 == 0 or i == len(slices) - 1:
                 log(
                     "s3",
-                    f"   {t}: {len(pop)} mã, {len(co):,} cặp đồng mua, "
+                    f"   {t}: {len(pop)} mã, {len(co) // 2:,} cặp đồng mua, "
                     f"{len(peer):,} cặp khách tương tự",
                 )
 

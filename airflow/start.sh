@@ -41,9 +41,9 @@ import os
 
 import docker
 
-image = os.getenv("PIPELINE_IMAGE", "personalized_stock_recommendation-app")
+image = os.getenv("PIPELINE_IMAGE", "trade_hold-app")
 app = os.getenv("APP_CONTAINER", "vv-app")
-client = docker.DockerClient(base_url=os.getenv("DOCKER_URL", "tcp://docker-proxy:2375"))
+client = docker.from_env()
 for c in client.containers.list(all=True, filters={"ancestor": image}):
     # Container có nhãn compose là app hoặc `docker compose run` (verify.sh) — không
     # phải của Airflow, không đụng tới.
