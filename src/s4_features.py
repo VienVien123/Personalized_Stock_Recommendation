@@ -41,13 +41,10 @@ PIT_JOINS = (
     "stock_at_t",
     "port_pit",
     "cust_pit",
-    "cust_skill",
     "cust_style",
     "cust_horizon",
-    "cust_phs_quality",
     "cust_sector_recent",
     "cust_recent_stock_seq",
-    "cust_recent_sector_seq",
     "cust_stock_pit",
 )
 
@@ -68,9 +65,6 @@ def customer_columns(k: str) -> str:
            st.preferred_vol_20 AS risk_appetite_vol,
            cu.n_buys_recent, cu.n_sells_recent, cu.n_active_days_recent,
            cu.phs_follow_rate,
-           pq.phs_scored_buys, pq.phs_hit_rate, pq.phs_avg_excess,
-           pq.phs_recent_scored_buys, pq.phs_recent_hit_rate,
-           pq.phs_recent_avg_excess,
            csr.icb_share_all, csr.icb_share_30d, csr.icb_share_90d,
            csr.icb_value_share_90d, csr.icb_recent_shift_30d,
            csr.icb_recent_shift_90d,
@@ -78,10 +72,6 @@ def customer_columns(k: str) -> str:
            COALESCE(rss.stock_in_last_3_buys, 0) AS stock_in_last_3_buys,
            COALESCE(rss.stock_in_last_5_buys, 0) AS stock_in_last_5_buys,
            rss.days_since_last_buy_stock,
-           COALESCE(rsec.same_sector_as_last_buy, 0) AS same_sector_as_last_buy,
-           COALESCE(rsec.same_sector_last_3_buys, 0) AS same_sector_last_3_buys,
-           COALESCE(rsec.same_sector_last_5_buys, 0) AS same_sector_last_5_buys,
-           rsec.days_since_last_buy_same_sector,
            DATE_DIFF('day', pr.open_date, {k}.t) AS account_age,
            cu.n_trades, cu.n_stocks, cu.n_buys, cu.n_sells"""
 
@@ -91,16 +81,11 @@ def customer_joins(k: str) -> str:
     return f"""
     JOIN prof pr ON pr.customer_id = {k}.customer_id
     LEFT JOIN cust_pit cu ON cu.t = {k}.t AND cu.customer_id = {k}.customer_id
-    LEFT JOIN cust_skill sk ON sk.t = {k}.t AND sk.customer_id = {k}.customer_id
     LEFT JOIN cust_style st ON st.t = {k}.t AND st.customer_id = {k}.customer_id
     LEFT JOIN cust_horizon ch ON ch.t = {k}.t AND ch.customer_id = {k}.customer_id
-    LEFT JOIN cust_phs_quality pq ON pq.t = {k}.t AND pq.customer_id = {k}.customer_id
     LEFT JOIN port_pit pp ON pp.t = {k}.t AND pp.customer_id = {k}.customer_id
     LEFT JOIN cust_sector_recent csr ON csr.t = {k}.t AND csr.customer_id = {k}.customer_id
                                     AND csr.icb_code = s.icb_code
-    LEFT JOIN cust_recent_sector_seq rsec ON rsec.t = {k}.t
-                                         AND rsec.customer_id = {k}.customer_id
-                                         AND rsec.icb_code = s.icb_code
     LEFT JOIN cust_recent_stock_seq rss ON rss.t = {k}.t AND rss.customer_id = {k}.customer_id
                                        AND rss.stock_code = {k}.stock_code
     LEFT JOIN cust_stock_pit csp ON csp.t = {k}.t AND csp.customer_id = {k}.customer_id
@@ -147,39 +132,29 @@ def build_stock_at_t(con):
 
 
 def build_graph_features(con):
-    """Bảng tạm từ đồ thị S3, lấy lát cắt gần nhất <= t:
-    _cooc      mã ứng viên hay được mua cùng các mã khách đang giữ đến mức nào
-    _pop       độ phổ biến của mã
-    _peer_buy  khách tương tự vừa mua / bán mã PHS vừa khuyến nghị
-    _peer_port khách tương tự vừa mua / bán mã khách đang giữ
+    """Bảng tạm từ đồ thị S3, lấy lát cắt gần nhất <= t (bảng dd_q):
+    _cooc    mã ứng viên hay được mua cùng các mã khách đang giữ đến mức nào
+    _peer    khách tương tự của từng khách
+    _recent  ai vừa mua / bán mã nào trong RECENT_WINDOW ngày ngay trước t
     """
     log("s4", "chuẩn bị đặc trưng graph BUY/SELL...")
     con.execute(f"""
-    CREATE OR REPLACE TABLE _cooc_top AS
-    SELECT qt, a, b, co FROM (
-        SELECT qt, a, b, co,
-               ROW_NUMBER() OVER (PARTITION BY qt, a ORDER BY co DESC, b) AS rn
-        FROM graph_cooc
-    ) WHERE rn <= {COOC_TOPN};
-
     CREATE OR REPLACE TABLE _cooc AS
+    WITH top AS (  -- mỗi mã chỉ giữ COOC_TOPN mã đồng mua mạnh nhất
+        SELECT * FROM graph_cooc
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY qt, a ORDER BY co DESC, b)
+                <= {COOC_TOPN}
+    )
     SELECT p.t, p.customer_id, g.b AS stock_code, SUM(g.co) AS cooc_score
     FROM pos p
-    JOIN dd_q q      ON q.t = p.t
-    JOIN _cooc_top g ON g.qt = q.qt AND g.a = p.stock_code
+    JOIN dd_q q ON q.t = p.t
+    JOIN top g  ON g.qt = q.qt AND g.a = p.stock_code
     GROUP BY 1, 2, 3;
 
-    CREATE OR REPLACE TABLE _pop AS
-    SELECT q.t, g.stock_code, g.n_buyers, g.buy_value,
-           g.n_sellers, g.sell_value
-    FROM dd_q q JOIN graph_pop g ON g.qt = q.qt;
-
-    -- khách tương tự của từng khách tại t (lát cắt đồ thị gần nhất <= t)
     CREATE OR REPLACE TABLE _peer AS
     SELECT q.t, g.customer_id, g.peer_id, g.sim
     FROM dd_q q JOIN graph_peer g ON g.qt = q.qt;
 
-    -- ai vừa mua / bán mã nào trong RECENT_WINDOW ngày ngay trước t
     CREATE OR REPLACE TABLE _recent AS
     SELECT dd.t, x.customer_id, x.stock_code,
            MAX(CASE WHEN x.side = 'BUY'  THEN 1 ELSE 0 END) AS bought,
@@ -187,27 +162,22 @@ def build_graph_features(con):
     FROM decision_dates dd
     JOIN txn x ON x.d < dd.t AND x.d >= dd.t - {RECENT_WINDOW}
     GROUP BY 1, 2, 3;
+    """)
 
-    -- bước thứ 3 của đường đi, chỉ tính cho các mã PHS vừa BUY mới tại t
-    CREATE OR REPLACE TABLE _peer_buy AS
-    SELECT p.t, p.customer_id, r.stock_code,
+
+def peer_scores(con, table, candidates):
+    """Bước thứ 3 của đường đi trên đồ thị: với mỗi (t, khách, mã) trong
+    `candidates`, các khách tương tự vừa mua / bán chính mã đó bao nhiêu
+    (cộng dồn theo độ giống sim)."""
+    con.execute(f"""
+    CREATE OR REPLACE TABLE {table} AS
+    SELECT c.t, c.customer_id, c.stock_code,
            SUM(p.sim * r.bought) AS peer_buy_score, SUM(r.bought) AS n_peer_buyers,
            SUM(p.sim * r.sold)   AS peer_sell_score, SUM(r.sold)  AS n_peer_sellers
-    FROM _peer p
-    JOIN _recent r ON r.t = p.t AND r.customer_id = p.peer_id
-    JOIN stock_at_t s ON s.t = r.t AND s.stock_code = r.stock_code
-                     AND s.research_recommendation = 'BUY'
-    GROUP BY 1, 2, 3;
-
-    -- ... và cho các mã khách đang nắm tại t
-    CREATE OR REPLACE TABLE _peer_port AS
-    SELECT ps.t, ps.customer_id, ps.stock_code,
-           SUM(p.sim * r.bought) AS peer_buy_score, SUM(r.bought) AS n_peer_buyers,
-           SUM(p.sim * r.sold)   AS peer_sell_score, SUM(r.sold)  AS n_peer_sellers
-    FROM pos ps
-    JOIN _peer p ON p.t = ps.t AND p.customer_id = ps.customer_id
-    JOIN _recent r ON r.t = ps.t AND r.customer_id = p.peer_id
-                  AND r.stock_code = ps.stock_code
+    FROM {candidates} c
+    JOIN _peer p   ON p.t = c.t AND p.customer_id = c.customer_id
+    JOIN _recent r ON r.t = c.t AND r.customer_id = p.peer_id
+                  AND r.stock_code = c.stock_code
     GROUP BY 1, 2, 3;
     """)
 
@@ -216,36 +186,31 @@ def build_buy_candidates(con):
     """cand_pool — mỗi khách x mỗi mã PHS vừa khuyến nghị MUA tại t, kèm điểm đã chuẩn
     hoá về [0, 1]. Model không tự phát minh mã nào ngoài danh sách của PHS.
 
-    Mọi tài khoản đã mở trước t đều nhận candidate BUY. Khách chưa có lịch sử sẽ
-    cold-start bằng MarketScore thay vì biến mất khỏi hệ thống (kỳ hạn của các
-    khách này là UNRATED vì chưa có bằng chứng nắm giữ nào).
+    Mọi tài khoản đã mở trước t đều nhận candidate BUY: khách chưa có lịch sử sẽ
+    cold-start bằng MarketScore thay vì biến mất khỏi hệ thống.
     """
-    con.execute("""
-    CREATE OR REPLACE TABLE cust_universe AS
-    SELECT dd.t, p.customer_id
-    FROM decision_dates dd
-    JOIN prof p ON p.open_date < dd.t;
-    """)
     log("s4", "dựng candidate BUY từ danh sách nghiên cứu tại t...")
     con.execute(f"""
     CREATE OR REPLACE TABLE cand_pool AS
     WITH raw AS (
-        SELECT u.t, u.customer_id, s.stock_code,
+        SELECT s.t, pr.customer_id, s.stock_code,
                COALESCE(c.cooc_score, 0) AS cooc_score,
                COALESCE(cs.icb_share_all, 0) AS icb_share,
-               COALESCE(p.n_buyers, 0) AS n_buyers,
-               COALESCE(p.buy_value, 0) AS graph_buy_value,
-               COALESCE(p.n_sellers, 0) AS n_sellers,
-               COALESCE(p.sell_value, 0) AS graph_sell_value,
+               COALESCE(g.n_buyers, 0) AS n_buyers,
+               COALESCE(g.buy_value, 0) AS graph_buy_value,
+               COALESCE(g.n_sellers, 0) AS n_sellers,
+               COALESCE(g.sell_value, 0) AS graph_sell_value,
                s.market_score, s.candidate_rank, s.label_complete, s.dn,
                s.target_price, s.cut_loss_price
-        FROM cust_universe u
-        JOIN stock_at_t s ON s.t = u.t AND s.research_recommendation = 'BUY'
-        LEFT JOIN _cooc c ON c.t = u.t AND c.customer_id = u.customer_id
+        FROM stock_at_t s
+        JOIN prof pr ON pr.open_date < s.t
+        LEFT JOIN _cooc c ON c.t = s.t AND c.customer_id = pr.customer_id
                          AND c.stock_code = s.stock_code
-        LEFT JOIN cust_sector_recent cs ON cs.t = u.t AND cs.customer_id = u.customer_id
+        LEFT JOIN cust_sector_recent cs ON cs.t = s.t AND cs.customer_id = pr.customer_id
                                        AND cs.icb_code = s.icb_code
-        LEFT JOIN _pop p ON p.t = u.t AND p.stock_code = s.stock_code
+        LEFT JOIN dd_q q ON q.t = s.t
+        LEFT JOIN graph_pop g ON g.qt = q.qt AND g.stock_code = s.stock_code
+        WHERE s.research_recommendation = 'BUY'
     ), norm AS (
         SELECT *,
           COALESCE((market_score - MIN(market_score) OVER (PARTITION BY t)) /
@@ -265,14 +230,6 @@ def build_buy_candidates(con):
            COUNT(*) OVER (PARTITION BY t, customer_id) AS basket_size
     FROM norm;
     """)
-
-    buy_cov = con.execute("""
-        SELECT ROUND(100.0 * AVG(CASE WHEN c.stock_code IS NULL THEN 0 ELSE 1 END), 1)
-        FROM future_buy f
-        LEFT JOIN cand_pool c ON c.t = f.t AND c.customer_id = f.customer_id
-                             AND c.stock_code = f.stock_code
-    """).fetchone()[0]
-    log("s4", f"độ phủ candidate BUY trên lệnh mua tương lai: {buy_cov}%")
 
 
 def build_train_buy(con):
@@ -310,7 +267,7 @@ def build_train_buy(con):
                COALESCE(pb.n_peer_sellers, 0)  AS n_peer_sellers,
                {customer_columns("cp")},
                cu.avg_trade_value, cu.days_since_first_trade, cu.days_since_last_trade,
-               sk.hist_hit_rate, pp.n_positions, pp.port_hhi,
+               pp.n_positions, pp.port_hhi,
                LN(GREATEST(pp.port_value, 1)) AS log_port_value, pp.avg_pnl_pct,
                COALESCE(csp.n_trades_stock, 0) AS n_trades_stock,
                COALESCE(csp.n_buys_stock, 0) AS n_buys_stock,
@@ -346,6 +303,19 @@ def build_train_portfolio(con):
     mới quyết định hành động, model chỉ xếp thứ tự bên trong cùng một bậc."""
     log("s4", "dựng train_portfolio cho các mã khách đang sở hữu...")
     rs = RESEARCH_SELL_SIGNAL
+    # Vị trí của mã SO VỚI các mã khác trong cùng danh mục (0 -> 1). Đặc trưng cấp
+    # khách giống nhau cho mọi mã của một khách nên không xếp hạng được trong danh
+    # mục; các cột này thì có.
+    in_port_ranks = ",\n           ".join(
+        f"PERCENT_RANK() OVER (PARTITION BY t, customer_id ORDER BY {col}) AS {name}"
+        for col, name in (
+            ("unreal_pnl_pct", "pnl_rank_in_port"),
+            ("pos_hold_days", "hold_days_rank_in_port"),
+            ("log_position_value", "weight_rank_in_port"),
+            ("ret_20", "ret_20_rank_in_port"),
+            ("days_since_stock DESC", "recency_rank_in_port"),
+        )
+    )
     create_by_date_chunks(
         con,
         f"""
@@ -382,7 +352,7 @@ def build_train_portfolio(con):
            COALESCE(csp.n_sells_stock, 0) AS n_sells_stock,
            csp.last_side,
            {customer_columns("p")},
-           sk.hist_hit_rate, pp.n_positions, pp.port_hhi,
+           pp.n_positions, pp.port_hhi,
            LN(GREATEST(pp.port_value, 1)) AS log_port_value, pp.avg_pnl_pct,
            CASE WHEN fs.stock_code IS NULL THEN 0 ELSE 1 END AS y,
            s.excess_fwd
@@ -395,60 +365,21 @@ def build_train_portfolio(con):
     LEFT JOIN future_sell fs ON fs.t = p.t AND fs.customer_id = p.customer_id
                             AND fs.stock_code = p.stock_code
     )
-    -- Vị trí của mã SO VỚI các mã khác trong cùng danh mục. Đặc trưng cấp khách
-    -- (kỳ hạn, nhịp giao dịch) giống nhau cho mọi mã của một khách nên không xếp
-    -- hạng được trong danh mục; các cột dưới đây thì có.
     SELECT *,
            unreal_pnl_pct - avg_pnl_pct AS pnl_vs_port_avg,
-           PERCENT_RANK() OVER (PARTITION BY t, customer_id
-                                ORDER BY unreal_pnl_pct)     AS pnl_rank_in_port,
-           PERCENT_RANK() OVER (PARTITION BY t, customer_id
-                                ORDER BY pos_hold_days)      AS hold_days_rank_in_port,
-           PERCENT_RANK() OVER (PARTITION BY t, customer_id
-                                ORDER BY log_position_value) AS weight_rank_in_port,
-           PERCENT_RANK() OVER (PARTITION BY t, customer_id
-                                ORDER BY ret_20)             AS ret_20_rank_in_port,
-           PERCENT_RANK() OVER (PARTITION BY t, customer_id
-                                ORDER BY days_since_stock DESC)
-                                                             AS recency_rank_in_port
+           {in_port_ranks}
     FROM b;
     """,
         slice_tables=(*PIT_JOINS, "_peer_port", "future_sell"),
     )
 
 
-def report(con):
-    """Số dòng, số dòng đủ nhãn và tỷ lệ nhãn dương của hai bảng train."""
-    for tb in ["train_buy", "train_portfolio"]:
-        n, n_labeled, pos_rate = con.execute(f"""
-            SELECT COUNT(*), COUNT_IF(label_complete = 1),
-                   ROUND(100.0*AVG(y) FILTER (WHERE label_complete = 1), 2)
-            FROM {tb}
-        """).fetchone()
-        log(
-            "s4",
-            f"  {tb:16s} {n:>9,} dòng | {n_labeled:>9,} đủ nhãn | "
-            f"tỷ lệ hành động tương lai {pos_rate}%",
-        )
-
-
 def drop_temp_tables(con):
     """Bảng trung gian chỉ phục vụ việc dựng train_buy / train_portfolio; giữ lại
     chỉ làm file DuckDB phình ra."""
-    for tmp in (
-        "_cooc",
-        "_cooc_top",
-        "_pop",
-        "_peer",
-        "_recent",
-        "_peer_buy",
-        "_peer_port",
-        "cand_pool",
-        "cust_universe",
-        "future_buy",
-        "future_sell",
-    ):
+    for tmp in ("_cooc", "_peer", "_recent", "_peer_buy", "_peer_port", "cand_pool"):
         con.execute(f"DROP TABLE IF EXISTS {tmp};")
+    con.execute("DROP TABLE IF EXISTS future_buy; DROP TABLE IF EXISTS future_sell;")
 
 
 def main():
@@ -457,9 +388,10 @@ def main():
     build_stock_at_t(con)
     build_graph_features(con)
     build_buy_candidates(con)
+    peer_scores(con, "_peer_buy", "cand_pool")
+    peer_scores(con, "_peer_port", "pos")
     build_train_buy(con)
     build_train_portfolio(con)
-    report(con)
     drop_temp_tables(con)
     con.close()
     log("s4", "xong.")

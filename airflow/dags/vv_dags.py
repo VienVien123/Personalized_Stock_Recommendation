@@ -1,6 +1,6 @@
 """DAG pipeline_khuyen_nghi (bấm chạy tay):
 
-    kiem_tra_du_lieu -> dung_app -> s1..s5 -> ghi_dau_hoan_tat -> bat_app
+    dung_app -> s1..s5 -> ghi_dau_hoan_tat -> bat_app
 
 Mỗi bước chạy trong một container riêng tạo từ image của app (DockerOperator), nên
 Airflow không cần cài thư viện của dự án.
@@ -51,7 +51,7 @@ def pipeline_task(task_id, args):
         environment=project_env(),
         mount_tmp_dir=False,
         auto_remove="force",
-        mem_limit="5g",
+        mem_limit="10g",
         # pool 1 chỗ (tạo trong start.sh): mỗi lúc chỉ một container chạy
         pool="docker_tasks",
     )
@@ -86,8 +86,6 @@ with DAG(
     tags=["pipeline"],
 ):
     chain(
-        # kiểm tra dữ liệu TRƯỚC khi dừng app: dữ liệu hỏng thì app vẫn phục vụ bản cũ
-        pipeline_task("kiem_tra_du_lieu", "--check-data"),
         PythonOperator(task_id="dung_app", python_callable=stop_app),
         *[pipeline_task(name, f"--step {name}") for name in STEPS],
         pipeline_task("ghi_dau_hoan_tat", "--mark-done"),

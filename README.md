@@ -32,7 +32,7 @@ Model hành vi quyết định mức độ phù hợp với từng khách.
 ## 2. Kiến trúc tổng thể
 
 ```text
-7 file CSV
+6 file CSV
    │
    ▼
 [S1] ETL + đặc trưng thị trường trong DuckDB
@@ -74,21 +74,14 @@ Thư mục `data/` gồm:
 | `market_index_daily.csv` | Dữ liệu VNINDEX và các chỉ số |
 | `customer_profile.csv` | Loại khách và ngày mở tài khoản |
 | `customer_transactions_raw.csv` | Lịch sử BUY/SELL của khách |
-| `customer_holdings.csv` | Snapshot danh mục cuối tháng — chỉ dùng để đối chiếu (xem dưới) |
 | `candidate_stocks_phs_skill.csv` | Nhật ký khuyến nghị PHS: mở `BUY`, đóng bằng `TAKE_PROFIT`/`CUT_LOSS` |
 
 Hồ sơ khách không còn cột khẩu vị rủi ro và kỳ hạn tự khai. Kỳ hạn đầu tư được suy ra
 từ hành vi nắm giữ thực tế (mục 6.4).
 
-**Kiểm tra đầu vào.** Trước khi chạy, `src/validate.py` kiểm tra từng file: đủ cột, cột
-bắt buộc không trống, số/ngày/giờ đúng định dạng, `side` và `recommendationType` chỉ nhận
-giá trị hợp lệ, và có chỉ số `VNINDEX`. Nếu sai, pipeline dừng ngay và in ra file, cột, số
-dòng lỗi kèm một giá trị ví dụ.
-
 **Vị thế được dựng lại từ giao dịch.** S2 tính số lượng và giá vốn bình quân (có phí mua
 `BUY_FEE` = 0,15%) sau từng lệnh, nên biết được danh mục của khách tại bất kỳ ngày nào chứ
-không chỉ cuối tháng. Kết quả được đối chiếu với `customer_holdings.csv`: trên bộ dữ liệu
-hiện tại khớp 100% cả số lượng lẫn giá vốn.
+không chỉ cuối tháng. Vì vậy không cần file snapshot danh mục (`customer_holdings.csv`).
 
 Các cột của file khuyến nghị PHS:
 
@@ -360,11 +353,8 @@ nguyên nhãn giữa hai mốc cuối tháng liên tiếp). Kiểm tra ngoài m�
 | `risk_appetite_vol` | Biến động trung bình của các mã khách chọn mua, thay cho `risk_level` tự khai |
 | `n_buys_recent`, `n_sells_recent`, `n_active_days_recent` | Nhịp giao dịch trong `RECENT_WINDOW` ngày gần nhất |
 | `phs_follow_rate` | Tỷ lệ lệnh mua rơi vào lúc PHS đang mở khuyến nghị cho đúng mã đó |
-| `phs_hit_rate`, `phs_avg_excess`, `phs_recent_hit_rate` | Chat luong cac lan khach tung mua theo PHS, chi tinh lenh da du `HORIZON` truoc `t` |
-| `icb_share_30d`, `icb_share_90d`, `icb_recent_shift_30d`, `icb_recent_shift_90d` | Khau vi nganh gan day so voi toan lich su mua cua khach |
-| `stock_in_last_3_buys`, `stock_in_last_5_buys` | Ma dang xet co nam trong cac lenh BUY gan nhat cua khach khong |
-| `same_sector_last_3_buys`, `same_sector_last_5_buys` | Nganh cua ma dang xet co trung voi chuoi BUY gan nhat cua khach khong |
-| `days_since_last_buy_same_sector` | So ngay tu lan gan nhat khach mua mot ma cung nganh |
+| `icb_share_30d`, `icb_share_90d`, `icb_recent_shift_30d`, `icb_recent_shift_90d` | Khẩu vị ngành gần đây so với toàn lịch sử mua của khách |
+| `stock_in_last_3_buys`, `stock_in_last_5_buys` | Mã đang xét có nằm trong các lệnh BUY gần nhất của khách không |
 | `port_hhi` | Độ tập trung danh mục (1 = dồn vào một mã) |
 | `pos_hold_days`, `pos_has_sold` | Vị thế đã giữ bao lâu, đã từng bán bớt chưa |
 | `hold_days_vs_typical` | Tuổi vị thế so với thời gian khách thường giữ |
@@ -573,13 +563,12 @@ Các mức K cố định là 1 và 3 (`EVAL_KS`), không phụ thuộc `TOPK` h
 | Bước | File | Chức năng chính |
 |---|---|---|
 | S1 | `src/s1_etl.py` | CSV → DuckDB, chuẩn hóa giá, mốc quyết định, tín hiệu PHS, market feature |
-| Kiểm tra | `src/validate.py` | Kiểm tra cột và kiểu dữ liệu của 7 file đầu vào |
 | S2 | `src/s2_state.py` | Dựng lại vị thế từ giao dịch, trạng thái và sở thích khách tại từng `t` |
 | S3 | `src/s3_graph.py` | Nạp Neo4j, tính đồng mua, độ phổ biến BUY/SELL và khách tương tự |
 | S4 | `src/s4_features.py` | Hard-filter research BUY, tạo bảng BUY và portfolio |
 | S5 | `src/s5_train.py` | Huấn luyện LightGBM và đánh giá walk-forward |
 | App | `src/app.py` | Ghép điểm, hiển thị khuyến nghị bằng Gradio |
-| Orchestrator | `src/pipeline.py` | Kiểm tra đầu vào rồi chạy tuần tự S1 → S5 |
+| Orchestrator | `src/pipeline.py` | Chạy tuần tự S1 → S5 |
 | Cấu hình | `src/config.py` | Tham số bài toán, trọng số đặt tay; đường dẫn và Neo4j đọc từ `.env` |
 
 
@@ -588,8 +577,15 @@ Các mức K cố định là 1 và 3 (`EVAL_KS`), không phụ thuộc `TOPK` h
 
 ### Yêu cầu
 
-- Docker Desktop, nên cấp ít nhất 8 GB RAM (Neo4j ~2 GB, pipeline tối đa 5 GB, Airflow ~1,5 GB);
-- đủ 7 file CSV trong thư mục `data/`.
+- Docker Desktop được cấp ~18 GB RAM (Neo4j ~3,5 GB, pipeline tối đa 10 GB, Airflow 3 GB).
+  WSL2 mặc định chỉ cấp 50% RAM máy; tăng bằng file `%USERPROFILE%\.wslconfig`:
+  ```ini
+  [wsl2]
+  memory=18GB
+  processors=16
+  ```
+  rồi chạy `wsl --shutdown` và mở lại Docker Desktop;
+- đủ 6 file CSV (mục 3) trong thư mục `data/`.
 
 ### Tạo `.env`
 
@@ -625,8 +621,8 @@ trong lúc đó app dừng, xong thì app tự bật lại. Chưa có kết qu�
 ### DAG `pipeline_khuyen_nghi`
 
 ```text
-kiem_tra_du_lieu -> dung_app -> s1_etl -> s2_state -> s3_graph -> s4_features -> s5_train
-                 -> ghi_dau_hoan_tat -> bat_app
+dung_app -> s1_etl -> s2_state -> s3_graph -> s4_features -> s5_train
+         -> ghi_dau_hoan_tat -> bat_app
 ```
 
 - Mỗi bước chạy trong một container riêng tạo từ image của app; hỏng ở đâu thì bấm *Clear*

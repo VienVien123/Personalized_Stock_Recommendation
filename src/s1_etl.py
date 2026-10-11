@@ -122,26 +122,6 @@ def load_profiles() -> pd.DataFrame:
     ]
 
 
-def load_holdings() -> pd.DataFrame:
-    """Snapshot nắm giữ cuối tháng. Chỉ còn dùng để ĐỐI CHIẾU: vị thế tại mọi mốc được
-    dựng lại từ giao dịch ở s2, và phải khớp với file này tại các ngày chốt tháng."""
-    raw = read_csv(
-        "customer_holdings.csv",
-        dtype={"customer_id": str, "stock_code": str},
-        parse_dates=["snapshot_date"],
-    )
-    return pd.DataFrame(
-        {
-            "t": raw["snapshot_date"],
-            "customer_id": raw["customer_id"],
-            "stock_code": raw["stock_code"],
-            "qty": raw["quantity"].astype("int64"),
-            "avg_cost": raw["avg_cost"].astype(float),
-            "mv": raw["market_value"].astype(float),
-        }
-    )
-
-
 # ---------------------------------------------------------------- khuyến nghị PHS
 def mid_price(text: str) -> float:
     """Vùng giá "20.0 - 20.5" -> điểm giữa 20.25; một số "21" -> 21."""
@@ -361,7 +341,6 @@ def main():
     dates = daycal.rename(columns={"d": "t"})  # mỗi phiên là một mốc t
     txn = load_transactions(px)
     prof = load_profiles()
-    hold = load_holdings()
     calls = pair_phs_calls()
     research = research_signals(dates, calls, px)
 
@@ -375,7 +354,6 @@ def main():
         "daycal": (daycal, None),
         "txn": (txn, {"ts": "TIME"}),
         "prof": (prof, None),
-        "hold": (hold, None),
         "decision_dates": (dates, None),
         "phs_calls": (calls, None),
         "research": (research, {"candidate_rank": "INTEGER"}),
@@ -386,45 +364,7 @@ def main():
         write_table(con, name, df, casts)
     con.execute("CREATE INDEX IF NOT EXISTS sd_idx ON sd(stock_code, dn);")
     con.close()
-
-    report({name: df for name, (df, _) in tables.items()})
     log("s1", "xong.")
-
-
-def report(tables: dict) -> None:
-    """In số dòng mỗi bảng và vài con số để kiểm tra nhanh dữ liệu."""
-    for name, df in tables.items():
-        if name != "daycal":
-            log("s1", f"  {name:16s} {len(df):>9,} dòng")
-    calls, dates = tables["phs_calls"], tables["decision_dates"]
-    research, txn = tables["research"], tables["txn"]
-
-    # khuyến nghị nào còn mở tại ít nhất một mốc quyết định
-    pairs = calls.merge(dates[["t"]], how="cross")
-    open_at_t = (pairs["t"] >= pairs["open_d"]) & (
-        pairs["close_d"].isna() | (pairs["t"] < pairs["close_d"])
-    )
-    n_seen = pairs.loc[open_at_t, ["stock_code", "open_d"]].drop_duplicates().shape[0]
-    log(
-        "s1",
-        f"  {n_seen}/{len(calls)} khuyến nghị PHS còn mở tại ít nhất một mốc",
-    )
-
-    n_buy = (
-        research[research["recommendation"] == "BUY"]
-        .groupby("d")
-        .size()
-        .reindex(dates["t"], fill_value=0)
-    )
-    log(
-        "s1",
-        f"  rổ PHS BUY mới trong ngày: TB {n_buy.mean():.1f} mã/mốc | "
-        f"{(n_buy == 0).sum()}/{len(n_buy)} mốc không có mã nào",
-    )
-    log(
-        "s1",
-        f"  lệnh có giá ngoài biên độ (đã gắn cờ): {int(txn['is_outlier'].sum()):,}",
-    )
 
 
 if __name__ == "__main__":

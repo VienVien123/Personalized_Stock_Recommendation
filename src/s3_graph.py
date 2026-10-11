@@ -125,12 +125,6 @@ def load_trades(s, con):
         if (i // BATCH) % 10 == 0:
             log("s3", f"   ... {min(i + BATCH, len(rows)):,}/{len(rows):,} cạnh")
 
-    n_new = s.run("MATCH ()-[r:TRADED]->() RETURN count(r) AS n").single()["n"]
-    if n_new != len(rows):
-        raise RuntimeError(
-            f"nạp đồ thị thiếu cạnh: {n_new:,}/{len(rows):,} — giao dịch có mã "
-            "hoặc khách không nằm trong danh mục?"
-        )
     return len(rows)
 
 

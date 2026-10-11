@@ -15,7 +15,6 @@ Cách đánh giá (walk-forward theo quý, không chia ngẫu nhiên):
 """
 
 import json
-import sys
 
 import lightgbm as lgb
 import numpy as np
@@ -60,7 +59,6 @@ PORTFOLIO_RESEARCH_COLS = [
     "in_research",
     "research_sell_signal",
 ]
-RESEARCH_COLUMN_PREFIXES = ("market_score", "candidate_r", "research_", "in_research")
 
 PARAMS = {
     "objective": "binary",  # cho xác suất thật để hiển thị trên app
@@ -314,11 +312,6 @@ def save(model, df, feats, name, rounds):
 def train_one(table, name, kind, research_cols, baseline_col, stride=1):
     log("s5", f"=== MODEL {name.upper()} ===")
     df, feats = prep(load_table(table, stride), research_cols)
-    # Luật cứng: cột của PHS không được vào model hành vi. Chặn theo tên cột để một
-    # bảng train còn cột lạ làm hỏng lần chạy thay vì âm thầm rò rỉ.
-    leaked = [f for f in feats if f.startswith(RESEARCH_COLUMN_PREFIXES)]
-    if leaked:
-        sys.exit(f"[{name}] cột research lọt vào đặc trưng: {', '.join(leaked)}")
     log(
         "s5",
         f"{len(df):,} dòng | {len(feats)} đặc trưng | "

@@ -4,8 +4,7 @@ Tại mỗi mốc quyết định t (phiên cuối tuần hoặc cuối tháng),
 đang như thế nào" CHỈ bằng dữ liệu có trước hoặc bằng t.
 
 Vị thế đang nắm được DỰNG LẠI từ giao dịch (không phụ thuộc file snapshot cuối
-tháng), nên pipeline chạy được ở mọi nhịp quyết định. File snapshot chỉ còn dùng
-để đối chiếu.
+tháng).
 
 Kỳ hạn đầu tư (SHORT / LEAN_SHORT / MEDIUM / LEAN_LONG / LONG) cũng được suy ra ở
 đây từ thời gian nắm giữ thực tế, thay cho cột investment_horizon tự khai đã không
@@ -20,7 +19,6 @@ from config import (
     BUY_FEE,
     HOLD_EVIDENCE_THRESHOLD,
     HOLD_MIN_EVIDENCE,
-    HORIZON,
     LONG_HOLD_DAYS,
     RECENT_WINDOW,
     SHORT_HOLD_DAYS,
@@ -68,12 +66,10 @@ def position_states(txn: pd.DataFrame, buy_fee: float = BUY_FEE) -> pd.DataFrame
     return out.groupby(["customer_id", "stock_code", "d"], sort=False).tail(1)
 
 
-def hold_episodes(txn: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+def hold_episodes(txn: pd.DataFrame) -> pd.DataFrame:
     """Tách các vòng nắm giữ: mua lúc đang không có mã -> bán hết.
 
-    `txn` phải được sắp theo (customer_id, stock_code, thời gian). Trả về bảng vòng
-    nắm giữ và số lệnh làm số dư âm (bán một vị thế có từ trước kỳ dữ liệu — khi đó
-    vòng nắm giữ của khách đó có thể bị tách sai).
+    `txn` phải được sắp theo (customer_id, stock_code, thời gian).
     """
     pair = [txn["customer_id"], txn["stock_code"]]
     is_buy = txn["side"] == "BUY"
@@ -91,7 +87,7 @@ def hold_episodes(txn: pd.DataFrame) -> tuple[pd.DataFrame, int]:
         sell_value=txn["value"].where(~is_buy, 0.0),
     )
     # ep = 0: lệnh bán của vị thế có từ trước khi dữ liệu bắt đầu -> bỏ
-    episodes = (
+    return (
         e[e["ep"] > 0]
         .groupby(["customer_id", "stock_code", "ep"], sort=False)
         .agg(
@@ -103,7 +99,6 @@ def hold_episodes(txn: pd.DataFrame) -> tuple[pd.DataFrame, int]:
         )
         .reset_index()
     )
-    return episodes, int((pos_after < 0).sum())
 
 
 # ---------------------------------------------------------------- vị thế
@@ -115,14 +110,7 @@ def build_hold_episodes(con, txn):
     lọc được phần đã biết tại t (open_d < t, close_d < t...) mà không rò rỉ.
     """
     log("s2", "tách các vòng mua -> bán hết của từng khách x mã...")
-    episodes, n_negative = hold_episodes(txn)
-    write_table(con, "hold_episode", episodes)
-    if n_negative:
-        log(
-            "s2",
-            f"  CẢNH BÁO: {n_negative:,} lệnh làm số dư âm (bán vị thế có từ trước kỳ "
-            "dữ liệu?) — vòng nắm giữ và kỳ hạn đầu tư của các khách này có thể sai.",
-        )
+    write_table(con, "hold_episode", hold_episodes(txn))
 
 
 def build_positions(con, txn):
@@ -130,7 +118,6 @@ def build_positions(con, txn):
 
     Dựng lại từ giao dịch: trạng thái cuối mỗi ngày có lệnh, có hiệu lực tới
     ngày có lệnh kế tiếp. Giá trị thị trường lấy giá đóng cửa gần nhất <= t.
-    Sau đó đối chiếu với snapshot cuối tháng của file gốc.
     """
     log("s2", "dựng lại vị thế từ giao dịch tại mỗi mốc...")
     states = position_states(txn)
@@ -176,31 +163,6 @@ def build_positions(con, txn):
           AND v.t >= e.open_d;
     """)
 
-    # Đối chiếu với snapshot cuối tháng của file gốc (so trên trạng thái dựng lại,
-    # nên chạy được cả khi ngày chốt tháng không phải là một mốc quyết định).
-    n_snap, n_found, n_same = con.execute("""
-        SELECT COUNT(*), COUNT_IF(s.qty > 0),
-               COUNT_IF(s.qty = h.qty
-                        AND ABS(s.avg_cost - h.avg_cost) <= 1e-4 * h.avg_cost)
-        FROM hold h
-        ASOF LEFT JOIN pos_state s
-               ON s.customer_id = h.customer_id AND s.stock_code = h.stock_code
-              AND h.t >= s.d
-    """).fetchone()
-    if n_snap:
-        log(
-            "s2",
-            f"  đối chiếu snapshot: {n_found:,}/{n_snap:,} vị thế tìm thấy, "
-            f"{n_same:,} khớp cả số lượng và giá vốn "
-            f"({100.0 * n_same / n_snap:.2f}%)",
-        )
-        if n_same < 0.99 * n_snap:
-            log(
-                "s2",
-                "  CẢNH BÁO: vị thế dựng lại lệch snapshot quá 1% — kiểm tra "
-                "BUY_FEE và dữ liệu giao dịch.",
-            )
-
 
 def build_portfolio_summary(con):
     """port_pit — số mã, tổng giá trị, lãi/lỗ TB, độ tập trung danh mục tại t."""
@@ -219,8 +181,8 @@ def build_portfolio_summary(con):
 
 # ---------------------------------------------------------------- thói quen khách
 def build_trade_history(con):
-    """cust_pit — thói quen giao dịch tích luỹ tới t (số lệnh, nhịp gần đây, có hay
-    mua theo PHS không); cust_phs_quality — những lần mua theo PHS hiệu quả ra sao."""
+    """cust_pit — thói quen giao dịch tích luỹ tới t: số lệnh, nhịp gần đây, có hay
+    mua theo PHS không."""
     log("s2", "lịch sử giao dịch tích luỹ tới mỗi mốc...")
     # Gắn cờ lệnh mua rơi vào lúc PHS đang mở khuyến nghị cho đúng mã đó.
     con.execute("""
@@ -259,31 +221,6 @@ def build_trade_history(con):
                                                                AS phs_follow_rate
     FROM decision_dates dd
     JOIN _txn_phs x ON x.d < dd.t
-    GROUP BY 1, 2;
-    """,
-    )
-    # ---------- 3a. Chất lượng mua theo PHS ----------
-    # `phs_follow_rate` ở trên chỉ trả lời "khách có hay mua theo PHS không?". Bảng này
-    # trả lời thêm "những lần mua theo PHS đã đủ HORIZON trước t thì kết quả ra sao?".
-    # Điều kiện s.dn + HORIZON <= dd.dn chặn rò rỉ: tại t chỉ dùng các lệnh đã biết
-    # kết quả 20 phiên.
-    create_by_date_chunks(
-        con,
-        f"""
-    CREATE OR REPLACE TABLE cust_phs_quality AS
-    SELECT dd.t, x.customer_id,
-           COUNT(*) AS phs_scored_buys,
-           AVG(CAST(s.y_stock AS DOUBLE)) AS phs_hit_rate,
-           AVG(s.excess_fwd) AS phs_avg_excess,
-           COUNT(*) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW}) AS phs_recent_scored_buys,
-           AVG(CAST(s.y_stock AS DOUBLE)) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW})
-               AS phs_recent_hit_rate,
-           AVG(s.excess_fwd) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW})
-               AS phs_recent_avg_excess
-    FROM decision_dates dd
-    JOIN _txn_phs x ON x.side = 'BUY' AND x.in_phs AND x.d < dd.t
-    JOIN sd s ON s.stock_code = x.stock_code AND s.d = x.d
-    WHERE s.dn + {HORIZON} <= dd.dn
     GROUP BY 1, 2;
     """,
     )
@@ -370,26 +307,6 @@ def build_horizon(con):
     )
 
 
-def build_skill(con):
-    """cust_skill — "tay nghề": tỷ lệ lệnh MUA trước đây mà 20 phiên sau mã đó thắng
-    VNINDEX. Chỉ tính các lệnh đã ĐỦ 20 phiên TRƯỚC t, nếu không sẽ rò rỉ tương lai."""
-    log("s2", "tỷ lệ chọn đúng mã trong quá khứ (đã chặn rò rỉ)...")
-    create_by_date_chunks(
-        con,
-        f"""
-    CREATE OR REPLACE TABLE cust_skill AS
-    SELECT dd.t, x.customer_id,
-           AVG(CAST(s.y_stock AS DOUBLE)) AS hist_hit_rate,
-           COUNT(*)                        AS n_scored_buys
-    FROM decision_dates dd
-    JOIN txn x ON x.side = 'BUY' AND x.d < dd.t
-    JOIN sd  s ON s.stock_code = x.stock_code AND s.d = x.d
-    WHERE s.dn + {HORIZON} <= dd.dn
-    GROUP BY 1, 2;
-    """,
-    )
-
-
 # ---------------------------------------------------------------- khẩu vị khách
 def build_sector_taste(con):
     """cust_sector_recent — tỷ trọng từng ngành trong các lệnh MUA: toàn lịch sử, 30 và
@@ -432,9 +349,8 @@ def build_sector_taste(con):
 
 
 def build_recent_buys(con):
-    """cust_recent_stock_seq, cust_recent_sector_seq — chuỗi mua gần nhất: mã / ngành
-    đang xét có nằm trong 1/3/5 lệnh BUY gần nhất của khách không. Tách stock và
-    sector để S4 ghép với cả rổ PHS và danh mục."""
+    """cust_recent_stock_seq — mã đang xét có nằm trong 1/3/5 lệnh BUY gần nhất của
+    khách không, và lần cuối mua mã đó cách đây bao lâu."""
     create_by_date_chunks(
         con,
         """
@@ -454,30 +370,6 @@ def build_recent_buys(con):
            MAX(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS stock_in_last_3_buys,
            MAX(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS stock_in_last_5_buys,
            MIN(days_ago) AS days_since_last_buy_stock
-    FROM r
-    GROUP BY 1, 2, 3;
-    """,
-    )
-    create_by_date_chunks(
-        con,
-        """
-    CREATE OR REPLACE TABLE cust_recent_sector_seq AS
-    WITH r AS (
-        SELECT dd.t, x.customer_id, sc.icb_code,
-               ROW_NUMBER() OVER (
-                   PARTITION BY dd.t, x.customer_id
-                   ORDER BY x.d DESC, x.ts DESC, x.transaction_id DESC
-               ) AS rn,
-               DATE_DIFF('day', x.d, dd.t) AS days_ago
-        FROM decision_dates dd
-        JOIN txn x ON x.d < dd.t AND x.side = 'BUY'
-        JOIN sec sc ON sc.stock_code = x.stock_code
-    )
-    SELECT t, customer_id, icb_code,
-           MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS same_sector_as_last_buy,
-           SUM(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS same_sector_last_3_buys,
-           SUM(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS same_sector_last_5_buys,
-           MIN(days_ago) AS days_since_last_buy_same_sector
     FROM r
     GROUP BY 1, 2, 3;
     """,
@@ -543,33 +435,6 @@ def build_stock_history(con):
     )
 
 
-def report(con):
-    """In số dòng mỗi bảng và phân bố kỳ hạn tại mốc mới nhất để kiểm tra nhanh."""
-    for t in [
-        "hold_episode",
-        "pos_state",
-        "pos",
-        "port_pit",
-        "cust_pit",
-        "cust_phs_quality",
-        "cust_horizon",
-        "cust_skill",
-        "cust_sector_recent",
-        "cust_recent_stock_seq",
-        "cust_recent_sector_seq",
-        "cust_style",
-        "cust_stock_pit",
-    ]:
-        n = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        log("s2", f"  {t:16s} {n:>9,} dòng")
-    # Phân bố kỳ hạn tại mốc mới nhất, để kiểm tra nhanh ngưỡng có hợp lý không.
-    dist = con.execute("""
-        SELECT investment_horizon, COUNT(*) FROM cust_horizon
-        WHERE t = (SELECT MAX(t) FROM cust_horizon) GROUP BY 1 ORDER BY 1
-    """).fetchall()
-    log("s2", "  kỳ hạn tại mốc cuối: " + " | ".join(f"{k} {n:,}" for k, n in dist))
-
-
 def main():
     con = connect()
     # mọi lệnh, sắp theo khách x mã x thời gian — dùng cho hai bước đầu
@@ -583,13 +448,11 @@ def main():
     build_portfolio_summary(con)
     build_trade_history(con)
     build_horizon(con)
-    build_skill(con)
     build_sector_taste(con)
     build_recent_buys(con)
     build_style(con)
     build_stock_history(con)
 
-    report(con)
     con.close()
     log("s2", "xong.")
 

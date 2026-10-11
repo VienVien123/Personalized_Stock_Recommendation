@@ -33,7 +33,7 @@ COOC_WINDOW = 180  # mỗi lát cắt nhìn bấy nhiêu ngày giao dịch trư�
 COOC_TOPN = 25  # số mã đồng mua mạnh nhất giữ lại cho mỗi mã
 PEER_TOPK = 20  # số khách tương tự giữ lại cho mỗi khách
 PEER_MIN_SHARED = 2  # số mã mua chung tối thiểu để hai khách được coi là giống
-GRAPH_WORKERS = 2  # số lát cắt gửi tới Neo4j cùng lúc
+GRAPH_WORKERS = 4  # số lát cắt gửi tới Neo4j cùng lúc
 
 # ---------- Trọng số đặt tay của các điểm thành phần (chỉ là ĐẶC TRƯNG cho model) ----------
 GRAPH_SCORE_WEIGHTS = {"cooc": 0.75, "buyer_pop": 0.25}
@@ -54,11 +54,11 @@ PORTFOLIO_TRAIN_STRIDE = 5
 
 # ---------- Tài nguyên ----------
 GRADIO_PORT = 7860
-# Container có 5 GB RAM: DuckDB dùng 3 GB + phần thêm theo từng luồng.
-DUCKDB_MEMORY = "3GB"
-DUCKDB_THREADS = 4
+# Container pipeline có 10 GB RAM: DuckDB dùng 7 GB + phần thêm theo từng luồng.
+DUCKDB_MEMORY = "7GB"
+DUCKDB_THREADS = 8
 # S2/S4 ghép "mọi mốc x lịch sử trước mốc" theo lô bấy nhiêu mốc, không thì hết RAM.
-DATE_CHUNK = 25
+DATE_CHUNK = 50
 # Chỗ DuckDB tràn dữ liệu ra đĩa — trong container, không trong artifacts/ (thư mục
 # gắn từ Windows ghi chậm và từng làm s2 hỏng với "Cannot allocate memory").
 TMP_DIR = os.getenv("DUCKDB_TEMP_DIR", "/tmp/duckdb_spill")
