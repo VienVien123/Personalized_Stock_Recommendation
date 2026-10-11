@@ -1,5 +1,10 @@
 # Nhật ký thay đổi
 
+## 2026-10-12 — gộp task ghi dấu hoàn tất vào `bat_app`
+
+- DAG bớt task `ghi_dau_hoan_tat`: `bat_app` tự ghi `artifacts/_pipeline_done` rồi mới bật
+  app. Chuỗi task còn `dung_app → s1 … s5 → bat_app`.
+
 ## 2026-10-11 — rút gọn pipeline, chỉ giữ code chạy
 
 Đợt này gồm 4 commit (`364daa5` → `ff3f3f9`): 32 file đổi, thêm 1.593 dòng, bỏ 7.567 dòng.

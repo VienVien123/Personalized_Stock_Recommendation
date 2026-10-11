@@ -62,7 +62,7 @@ docker compose exec airflow airflow dags trigger pipeline_khuyen_nghi
 | Airflow | http://localhost:8080 |
 | Neo4j | http://localhost:7474 |
 
-DAG `pipeline_khuyen_nghi` chạy `dung_app → s1 … s5 → ghi_dau_hoan_tat → bat_app`, mỗi bước
+DAG `pipeline_khuyen_nghi` chạy `dung_app → s1 … s5 → bat_app`, mỗi bước
 trong một container riêng. Trong lúc chạy, app tạm dừng vì DuckDB chỉ cho một tiến trình
 ghi; khi tất cả các bước xong thì app tự bật lại. Nếu hỏng ở bước nào, bấm *Clear* bước đó
 để chạy lại từ đó.

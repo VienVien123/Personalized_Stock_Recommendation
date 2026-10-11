@@ -61,7 +61,7 @@ hạn 10 GB; DuckDB dùng 7 GB và 8 luồng.
 Bấm DAG `pipeline_khuyen_nghi` trên Airflow (<http://localhost:8080>):
 
 ```
-dung_app -> s1_etl -> s2_state -> s3_graph -> s4_features -> s5_train -> ghi_dau_hoan_tat -> bat_app
+dung_app -> s1_etl -> s2_state -> s3_graph -> s4_features -> s5_train -> bat_app
 ```
 
 Mỗi bước là một task riêng: hỏng ở đâu thì bấm *Clear* task đó để chạy lại từ bước hỏng.

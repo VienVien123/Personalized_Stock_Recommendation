@@ -1,6 +1,6 @@
 """DAG pipeline_khuyen_nghi (bấm chạy tay):
 
-    dung_app -> s1..s5 -> ghi_dau_hoan_tat -> bat_app
+    dung_app -> s1..s5 -> bat_app
 
 Mỗi bước chạy trong một container riêng tạo từ image của app (DockerOperator), nên
 Airflow không cần cài thư viện của dự án.
@@ -57,23 +57,28 @@ def pipeline_task(task_id, args):
     )
 
 
-def stop_app():
-    """Dừng app (nó đang giữ file DuckDB) rồi xoá dấu hoàn tất.
-
-    Airflow chỉ gắn dự án ở chế độ chỉ-đọc nên nhờ một container tạm xoá file.
-    """
-    client = docker.from_env()
-    client.containers.get(APP_CONTAINER).stop(timeout=30)
+def set_done_marker(client, flag):
+    """Airflow chỉ gắn dự án ở chế độ chỉ-đọc nên nhờ một container tạm ghi/xoá dấu."""
     client.containers.run(
         IMAGE,
-        ["python", "-u", "/app/src/pipeline.py", "--clear-done"],
+        ["python", "-u", "/app/src/pipeline.py", flag],
         mounts=MOUNTS,
         remove=True,
     )
 
 
+def stop_app():
+    """Dừng app (nó đang giữ file DuckDB) rồi xoá dấu hoàn tất."""
+    client = docker.from_env()
+    client.containers.get(APP_CONTAINER).stop(timeout=30)
+    set_done_marker(client, "--clear-done")
+
+
 def start_app():
-    docker.from_env().containers.get(APP_CONTAINER).start()
+    """Ghi dấu hoàn tất rồi bật app — app chỉ phục vụ khi thấy dấu này."""
+    client = docker.from_env()
+    set_done_marker(client, "--mark-done")
+    client.containers.get(APP_CONTAINER).start()
 
 
 with DAG(
@@ -88,7 +93,6 @@ with DAG(
     chain(
         PythonOperator(task_id="dung_app", python_callable=stop_app),
         *[pipeline_task(name, f"--step {name}") for name in STEPS],
-        pipeline_task("ghi_dau_hoan_tat", "--mark-done"),
         # chỉ bật lại app khi mọi bước đều xong: hỏng giữa chừng thì app nằm yên
         PythonOperator(task_id="bat_app", python_callable=start_app),
     )
