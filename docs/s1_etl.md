@@ -80,11 +80,12 @@ BUY có thêm `market_score` = dư địa tới giá mục tiêu (%): giá 100.0
 Cửa sổ tính theo **số phiên `dn`**, không theo số dòng: mã nghỉ giao dịch vài phiên thì "20
 phiên trước" vẫn đúng là 20 phiên thị trường.
 
-**Cách code tính cửa sổ (không lặp từng mã):** sắp dữ liệu theo (mã, `dn`), gắn khoá
-`mã × 1.000.000 + dn` tăng dần, rồi tìm nhị phân:
+**Cách code tính cửa sổ (không lặp từng mã):** xoay giá thành bảng rộng — mỗi hàng một
+phiên `dn`, mỗi cột một mã, ô trống là phiên mã không giao dịch — nên "k phiên trước" chỉ là
+dịch k hàng:
 
-- `window_start(key, 20)` → dòng đầu tiên có `dn ≥ dn − 20` (đầu cửa sổ);
-- `window_end(key, 20)` → dòng cuối cùng có `dn ≤ dn + 20` (giá sau 20 phiên);
-- `sum20(x)` → tổng trong cửa sổ = tổng dồn tới hiện tại − tổng dồn trước đầu cửa sổ.
+- `ago(k)` → giá k phiên trước; phiên đó mã nghỉ thì lấy phiên có giá kế sau;
+- `ahead(prices, k)` → giá sau k phiên; phiên đó không có giá thì lấy phiên gần nhất trước;
+- `last20(x)` → cửa sổ từ `dn − 20` tới `dn`, bỏ qua các phiên mã không giao dịch.
 
 **Tiếp theo:** [S2](s2_state.md)

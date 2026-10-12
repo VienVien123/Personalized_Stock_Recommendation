@@ -200,16 +200,6 @@ def without(df, other, key):
 
 
 # ---------------------------------------------------------------- đặc trưng giá
-def window_start(key: np.ndarray, back: int) -> np.ndarray:
-    """Vị trí dòng đầu tiên có số phiên >= dn - back (cùng mã). `key` đã sắp tăng."""
-    return np.searchsorted(key, key - back, side="left")
-
-
-def window_end(key: np.ndarray, ahead: int) -> np.ndarray:
-    """Vị trí dòng cuối cùng có số phiên <= dn + ahead (cùng mã)."""
-    return np.searchsorted(key, key + ahead, side="right") - 1
-
-
 def price_features(px, idx, daycal) -> pd.DataFrame:
     """Đặc trưng giá theo phiên + excess_fwd (mã vượt VNINDEX bao nhiêu trong HORIZON
     phiên tới — chỉ để chấm điểm ở S5, không đưa vào model).
@@ -218,66 +208,47 @@ def price_features(px, idx, daycal) -> pd.DataFrame:
     """
     df = px[["stock_code", "d", "c", "v"]].merge(daycal, on="d")
     df = df.sort_values(["stock_code", "dn"], ignore_index=True)
-    # khoá (mã, dn) tăng dần: tìm biên cửa sổ bằng tìm kiếm nhị phân, không lặp từng mã
-    stock_id = df["stock_code"].astype("category").cat.codes.to_numpy().astype(np.int64)
-    key = stock_id * 1_000_000 + df["dn"].to_numpy()
-    c = df["c"].to_numpy()
-    df["r1"] = df["c"] / df.groupby("stock_code")["c"].shift(1) - 1
+    # bảng rộng: mỗi hàng một phiên, mỗi cột một mã; ô trống = mã không giao dịch phiên đó
+    c = df.pivot(index="dn", columns="stock_code", values="c").reindex(daycal["dn"])
+    v = df.pivot(index="dn", columns="stock_code", values="v").reindex(daycal["dn"])
+    traded = c.notna()
 
-    # tổng trong cửa sổ 20 phiên = tổng dồn tới dòng hiện tại - tổng dồn trước đầu cửa sổ
-    start20 = window_start(key, 20)
+    def ago(k):
+        """Giá k phiên trước; phiên đó mã nghỉ thì lấy phiên có giá kế sau."""
+        nxt = c.bfill()
+        return nxt.shift(k).fillna(nxt.iloc[0])
 
-    def sum20(values: pd.Series) -> np.ndarray:
-        incl = values.groupby(df["stock_code"]).cumsum().to_numpy()
-        excl = incl - values.to_numpy()
-        return incl - excl[start20]
+    def ahead(prices, k):
+        """Giá sau k phiên; phiên đó không có giá thì lấy phiên có giá gần nhất trước."""
+        last = prices.ffill()
+        return last.shift(-k).fillna(last.iloc[-1])
 
-    r1 = df["r1"].fillna(0.0)
-    n = np.arange(len(df)) - start20 + 1  # số phiên có giao dịch trong cửa sổ
-    n_r1 = sum20(df["r1"].notna().astype(float))
-    s1, s2 = sum20(r1), sum20(r1**2)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        var = (s2 - s1**2 / n_r1) / (n_r1 - 1)
-    vol_20 = np.where(n_r1 >= 2, np.sqrt(np.clip(var, 0, None)), np.nan)
+    def last20(values):
+        """Cửa sổ từ dn-20 tới dn, bỏ qua các phiên mã không giao dịch."""
+        return values.rolling(21, min_periods=1)
 
-    # VNINDEX: giá hôm nay và sau HORIZON phiên
-    vni = idx[idx["index_code"] == "VNINDEX"].merge(daycal, on="d").sort_values("dn")
-    vni_key = vni["dn"].to_numpy()
-    vni = pd.DataFrame(
-        {
-            "dn": vni_key,
-            "idx_c": vni["c"].to_numpy(),
-            "idx_c_fwd": vni["c"].to_numpy()[window_end(vni_key, HORIZON)],
-        }
+    r1 = c / c.ffill().shift(1) - 1  # so với lần giao dịch liền trước của mã
+    vni = idx[idx["index_code"] == "VNINDEX"].merge(daycal, on="d")
+    vni = vni.set_index("dn")["c"].reindex(daycal["dn"])
+
+    wide = {
+        "ret_5": c / ago(5) - 1,
+        "ret_20": c / ago(20) - 1,
+        "ret_60": c / ago(60) - 1,
+        "vol_20": r1.rolling(21, min_periods=2).std(),
+        "up_ratio_20": last20((r1 > 0).where(traded)).mean(),
+        "n_sessions_20": last20(traded).sum().astype("int64"),
+        "vol_ratio": v / last20(v).mean().replace(0, np.nan),
+        "turnover": v * c,
+        "excess_fwd": (ahead(c, HORIZON) / c).sub(ahead(vni, HORIZON) / vni, axis=0),
+    }
+    # đưa về dạng dài: mỗi dòng một (mã, phiên) có giao dịch
+    row, col = df["dn"].to_numpy() - 1, c.columns.get_indexer(df["stock_code"])
+    out = df[["stock_code", "d", "dn"]].assign(
+        **{name: w.to_numpy()[row, col] for name, w in wide.items()}
     )
-
-    df = df.assign(
-        c_5a=c[window_start(key, 5)],
-        c_20a=c[start20],
-        c_60a=c[window_start(key, 60)],
-        c_fwd=c[window_end(key, HORIZON)],
-        vol_20=vol_20,
-        v_avg20=sum20(df["v"].astype(float)) / n,
-        up_ratio_20=sum20((df["r1"] > 0).astype(float)) / n,
-        n_sessions_20=n,
-    ).merge(vni, on="dn")
-
-    return pd.DataFrame(
-        {
-            "stock_code": df["stock_code"],
-            "d": df["d"],
-            "dn": df["dn"],
-            "ret_5": df["c"] / df["c_5a"] - 1,
-            "ret_20": df["c"] / df["c_20a"] - 1,
-            "ret_60": df["c"] / df["c_60a"] - 1,
-            "vol_20": df["vol_20"],
-            "up_ratio_20": df["up_ratio_20"],
-            "n_sessions_20": df["n_sessions_20"],
-            "vol_ratio": df["v"] / df["v_avg20"].replace(0, np.nan),
-            "turnover": df["v"] * df["c"],
-            "excess_fwd": df["c_fwd"] / df["c"] - df["idx_c_fwd"] / df["idx_c"],
-        }
-    )
+    # phiên thiếu VNINDEX thì không tính được excess_fwd -> bỏ
+    return out[out["dn"].isin(vni.dropna().index)].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------- chạy
