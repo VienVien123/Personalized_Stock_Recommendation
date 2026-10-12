@@ -1,9 +1,6 @@
-"""DAG pipeline_khuyen_nghi (bấm chạy tay):
+"""DAG pipeline_khuyen_nghi
 
     dung_app -> s1..s5 -> bat_app
-
-Mỗi bước chạy trong một container riêng tạo từ image của app (DockerOperator), nên
-Airflow không cần cài thư viện của dự án.
 """
 
 import os
