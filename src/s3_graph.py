@@ -1,6 +1,6 @@
 """
 Bước 3 — Neo4j
-Nạp đồ thị Khách - Mã - Ngành, rồi rút ra đặc trưng đồ thị THEO LÁT CẮT THỜI GIAN.
+Nạp đồ thị Khách - Mã, rồi rút ra đặc trưng đồ thị THEO LÁT CẮT THỜI GIAN.
 
 Nguyên tắc chống rò rỉ (quan trọng nhất của bước này):
   Cạnh TRADED mang sẵn thuộc tính ngày `d`. Mọi truy vấn đặc trưng đều có
@@ -48,11 +48,9 @@ def data_fingerprint(con) -> str:
         SELECT
           (SELECT COUNT(*) || ':' || COALESCE(BIT_XOR(HASH(CONCAT_WS('|',
                   customer_id, stock_code, CAST(d AS VARCHAR), side,
-                  CAST(qty AS VARCHAR), CAST(value AS VARCHAR)))), 0) FROM txn),
-          (SELECT COUNT(*) || ':' || COALESCE(BIT_XOR(HASH(CONCAT_WS('|',
-                  stock_code, exchange, icb_code, icb_name))), 0) FROM sec),
-          (SELECT COUNT(*) || ':' || COALESCE(BIT_XOR(HASH(CONCAT_WS('|',
-                  customer_id, customer_type))), 0) FROM prof)
+                  CAST(value AS VARCHAR)))), 0) FROM txn),
+          (SELECT COUNT(*) || ':' || COALESCE(BIT_XOR(HASH(stock_code)), 0) FROM sec),
+          (SELECT COUNT(*) || ':' || COALESCE(BIT_XOR(HASH(customer_id)), 0) FROM prof)
     """).fetchone()
     return "txn=" + parts[0] + ";sec=" + parts[1] + ";prof=" + parts[2]
 
@@ -76,50 +74,27 @@ def create_schema(s):
         "CREATE CONSTRAINT stock_code IF NOT EXISTS "
         "FOR (x:Stock) REQUIRE x.code IS UNIQUE"
     )
-    s.run(
-        "CREATE CONSTRAINT sector_code IF NOT EXISTS "
-        "FOR (g:Sector) REQUIRE g.code IS UNIQUE"
-    )
     s.run("CREATE INDEX traded_date IF NOT EXISTS FOR ()-[r:TRADED]-() ON (r.d)")
 
 
 def load_nodes(s, con):
-    """Node Khách / Mã / Ngành và cạnh Mã -IN_SECTOR-> Ngành."""
-    cust = con.execute("SELECT customer_id, customer_type FROM prof").fetchall()
-    s.run(
-        "UNWIND $rows AS r MERGE (c:Customer {id: r[0]}) SET c.type=r[1]",
-        rows=cust,
-    )
+    """Node Khách / Mã."""
+    cust = con.execute("SELECT customer_id FROM prof").fetchall()
+    s.run("UNWIND $rows AS r MERGE (c:Customer {id: r[0]})", rows=cust)
 
-    stk = con.execute(
-        "SELECT stock_code, exchange, icb_code, icb_name FROM sec"
-    ).fetchall()
-    s.run(
-        "UNWIND $rows AS r MERGE (x:Stock {code: r[0]}) "
-        "SET x.exchange=r[1], x.icb=r[2]",
-        rows=stk,
-    )
-
-    sect = con.execute("SELECT DISTINCT icb_code, icb_name FROM sec").fetchall()
-    s.run("UNWIND $rows AS r MERGE (g:Sector {code: r[0]}) SET g.name=r[1]", rows=sect)
-    s.run(
-        """UNWIND $rows AS r
-             MATCH (x:Stock {code:r[0]}), (g:Sector {code:r[1]})
-             MERGE (x)-[:IN_SECTOR]->(g)""",
-        rows=con.execute("SELECT stock_code, icb_code FROM sec").fetchall(),
-    )
+    stk = con.execute("SELECT stock_code FROM sec").fetchall()
+    s.run("UNWIND $rows AS r MERGE (x:Stock {code: r[0]})", rows=stk)
 
 
 def load_trades(s, con):
     """Mỗi lệnh giao dịch thành một cạnh Khách -TRADED-> Mã, mang theo ngày `d`."""
     rows = con.execute("""SELECT customer_id, stock_code, CAST(d AS VARCHAR),
-                                 side, qty, value FROM txn ORDER BY d""").fetchall()
+                                 side, value FROM txn ORDER BY d""").fetchall()
     for i in range(0, len(rows), BATCH):
         s.run(
             """UNWIND $rows AS r
                  MATCH (c:Customer {id: r[0]}), (x:Stock {code: r[1]})
-                 CREATE (c)-[:TRADED {d: r[2], side: r[3], qty: r[4],
-                                      value: r[5]}]->(x)""",
+                 CREATE (c)-[:TRADED {d: r[2], side: r[3], value: r[4]}]->(x)""",
             rows=rows[i : i + BATCH],
         )
         if (i // BATCH) % 10 == 0:
@@ -151,7 +126,7 @@ def load_graph(drv, con):
             )
             wipe_graph(s)
 
-        log("s3", "nạp node Khách / Mã / Ngành...")
+        log("s3", "nạp node Khách / Mã...")
         load_nodes(s, con)
         log("s3", "nạp cạnh TRADED (có mốc thời gian)...")
         n_edges = load_trades(s, con)
@@ -290,7 +265,6 @@ def extract_features(drv, con):
 
 def main():
     con = connect()
-    # Tắt thông báo của server (nhãn chưa tồn tại ở lần chạy đầu, v.v.) để log gọn.
     drv = GraphDatabase.driver(
         NEO4J_URI,
         auth=(NEO4J_USER, NEO4J_PASSWORD),
@@ -302,7 +276,6 @@ def main():
     drv.close()
     con.close()
     log("s3", "xong.")
-
 
 if __name__ == "__main__":
     main()

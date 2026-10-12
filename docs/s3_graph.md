@@ -14,7 +14,7 @@ này cũng mua…":
 ## Đồ thị
 
 ```
-(Khách A) ─TRADED─▶ (FPT) ─IN_SECTOR─▶ (Công nghệ)
+(Khách A) ─TRADED─▶ (FPT)
                       ▲
 (Khách B) ─TRADED─────┘
 ```
@@ -27,7 +27,7 @@ nên **một** đồ thị dùng được cho mọi mốc mà không nhìn thấ
 1. `create_schema` — ràng buộc duy nhất cho node, chỉ mục theo ngày trên cạnh.
 2. **Dấu vân tay** (`data_fingerprint`): băm nội dung `txn`, `sec`, `prof`. Khớp dấu đã lưu →
    **bỏ qua** nạp (tiết kiệm thời gian). Không khớp → xoá sạch rồi nạp lại.
-3. `load_nodes` — Khách, Mã, Ngành; `load_trades` — các cạnh `TRADED`, lô 10.000 lệnh.
+3. `load_nodes` — Khách, Mã; `load_trades` — các cạnh `TRADED`, lô 10.000 lệnh.
 4. Nạp xong mới ghi dấu vân tay — nạp dở thì lần sau tự nạp lại.
 
 ## Rút đặc trưng (`extract_features`)
